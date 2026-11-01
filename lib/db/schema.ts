@@ -129,4 +129,15 @@ export const MIGRATIONS: Array<{ version: number; name: string; sql: string }> =
       );
     `,
   },
+  {
+    version: 4,
+    name: "app_settings",
+    sql: /* sql */ `
+      -- Small key/value store (e.g. sessions_valid_after for logout revocation).
+      CREATE TABLE app_settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `,
+  },
 ];

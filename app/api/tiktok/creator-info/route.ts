@@ -4,7 +4,7 @@ import type { TikTokAdapter } from "@/lib/adapters/platforms/tiktok";
 import { getDb } from "@/lib/db";
 import { listAccounts } from "@/lib/db/repo";
 import { json } from "@/lib/http";
-import { dryRunModeFromEnv, shouldDryRun } from "@/lib/jobs/runner";
+import { dryRunModeFromEnv, shouldDryRun, withFreshAccount } from "@/lib/jobs/runner";
 import { MOCK_CREATOR_INFO } from "@/lib/platforms/tiktok";
 
 /**
@@ -19,12 +19,14 @@ export async function GET() {
   if (shouldDryRun(adapter, { dryRun: false }, dryRunModeFromEnv())) {
     return json({ source: "mock", reason: "TikTok runs in dry-run mode", creator: MOCK_CREATOR_INFO });
   }
-  const account = listAccounts(getDb(), "tiktok")[0];
+  const db = getDb();
+  const account = listAccounts(db, "tiktok")[0];
   if (!account) {
     return json({ source: "mock", reason: "No TikTok account connected", creator: MOCK_CREATOR_INFO });
   }
   try {
-    const creator = await adapter.queryCreatorInfo(account);
+    // TikTok access tokens are short-lived (~24 h): refresh like the job runner does.
+    const creator = await withFreshAccount(db, adapter, account, (a) => adapter.queryCreatorInfo(a));
     return json({ source: "api", account: { id: account.id, displayName: account.displayName }, creator });
   } catch (err) {
     const message = err instanceof AdapterError ? err.message : "Could not reach TikTok";

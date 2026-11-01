@@ -11,6 +11,8 @@ export function uploadDir(): string {
 }
 
 const SAFE_EXT = /^\.[a-z0-9]{1,8}$/;
+/** Extensions we keep for stored files; anything else is stored without an extension. */
+const KEEP_EXT = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".mpg", ".mpeg", ".wmv", ".flv", ".3gp", ".jpg", ".jpeg", ".png", ".webp"]);
 
 export interface StoredFile {
   /** Path relative to the upload dir (what we persist in the DB). */
@@ -27,7 +29,7 @@ export async function saveStream(
 ): Promise<StoredFile> {
   const dir = opts.dir ?? uploadDir();
   const ext = path.extname(originalFilename).toLowerCase();
-  const name = `${randomUUID()}${SAFE_EXT.test(ext) ? ext : ""}`;
+  const name = `${randomUUID()}${SAFE_EXT.test(ext) && KEEP_EXT.has(ext) ? ext : ""}`;
   // Shard by first two chars to keep directories small.
   const rel = path.join(name.slice(0, 2), name);
   const abs = path.join(/*turbopackIgnore: true*/ dir, rel);

@@ -161,7 +161,7 @@ export function Composer({ draftId: initialDraftId = null }: { draftId?: string 
   if (!selected.length) blockers.push("Select at least one platform");
   if (errorCount) blockers.push(`Fix ${errorCount} error${errorCount > 1 ? "s" : ""}`);
   if (scheduleInvalid) blockers.push("Pick a future schedule time");
-  if (tiktokSelected && creatorState?.status === "error") blockers.push("TikTok creator info unavailable — deselect TikTok or retry later");
+  if (tiktokSelected && creatorState?.status === "error") blockers.push("TikTok creator info unavailable — retry in the TikTok panel or deselect TikTok");
   if (tiktokSelected && (!creatorState || creatorState.status === "loading")) blockers.push("Loading TikTok creator info");
   const locked = draftLoad.status === "locked" || draftLoad.status === "loading";
 

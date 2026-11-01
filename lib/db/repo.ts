@@ -449,20 +449,51 @@ export function saveJobCheckpoint(db: DB, id: string, checkpoint: unknown): void
 /**
  * Recover jobs left `uploading` by a process that died mid-upload. Only call this while holding the
  * worker lease (otherwise you'd steal another live process's jobs).
- *  - attempts remain → re-queued immediately; adapters with resume checkpoints continue the upload
- *  - out of attempts → failed with a clear message (can be retried manually)
+ *  - safe to retry (`canAutoRetry`) and attempts remain → re-queued immediately
+ *  - otherwise → failed with a clear message (retry manually after checking the platform)
+ * `canAutoRetry` should be false when a retry could post twice (no resume checkpoint, real upload).
  */
-export function requeueOrphanedJobs(db: DB, exclude: Iterable<string> = []): PublishJob[] {
+export function requeueOrphanedJobs(
+  db: DB,
+  exclude: Iterable<string> = [],
+  canAutoRetry: (job: PublishJob) => boolean = () => true,
+): PublishJob[] {
   const skip = new Set(exclude);
   const orphans = many(db, toJob, "SELECT * FROM publish_jobs WHERE status = 'uploading'").filter((j) => !skip.has(j.id));
   return orphans.map((j) => {
-    const canRetry = j.attempts < j.maxAttempts;
-    const message = canRetry
-      ? `Interrupted by a server restart during upload (attempt ${j.attempts}/${j.maxAttempts}); re-queued automatically.`
-      : `Interrupted by a server restart during upload and no attempts are left (${j.attempts}/${j.maxAttempts}). ` +
+    const attemptsLeft = j.attempts < j.maxAttempts;
+    const safe = canAutoRetry(j);
+    let message: string;
+    if (attemptsLeft && safe) {
+      message = `Interrupted by a server restart during upload (attempt ${j.attempts}/${j.maxAttempts}); re-queued automatically.`;
+    } else if (!safe) {
+      message =
+        "Interrupted by a server restart during upload. It may already have been posted on the platform: " +
+        "check there first, then retry manually if needed.";
+    } else {
+      message =
+        `Interrupted by a server restart during upload and no attempts are left (${j.attempts}/${j.maxAttempts}). ` +
         "Check the platform for a partial post, then retry manually.";
-    return markJobFailed(db, j.id, message, { retryable: canRetry, delayMs: 0 });
+    }
+    return markJobFailed(db, j.id, message, { retryable: attemptsLeft && safe, delayMs: 0 });
   });
+}
+
+/**
+ * Delete media rows older than `olderThanMs` that no post references (uploads that were replaced
+ * or never saved). Returns their storage paths so the caller can delete the files.
+ */
+export function deleteOrphanMedia(db: DB, olderThanMs: number, now = Date.now()): string[] {
+  const cutoff = new Date(now - olderThanMs).toISOString();
+  const rows = db
+    .prepare(
+      `SELECT id, storage_path FROM media m WHERE created_at < ?
+         AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.media_id = m.id OR p.thumbnail_id = m.id)`,
+    )
+    .all(cutoff) as Array<{ id: string; storage_path: string }>;
+  const del = db.prepare("DELETE FROM media WHERE id = ?");
+  transaction(db, () => rows.forEach((r) => del.run(r.id)));
+  return rows.map((r) => r.storage_path);
 }
 
 export const listRecentJobs = (db: DB, limit = 200) =>

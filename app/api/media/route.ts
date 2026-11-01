@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { sessionFromRequest } from "@/lib/auth";
+import { isCrossOriginWrite, sessionFromRequest } from "@/lib/auth";
+import { sessionsValidAfter } from "@/lib/auth-store";
 import { getDb } from "@/lib/db";
 import { createMedia } from "@/lib/db/repo";
 import { mergeMetadata, probeVideo } from "@/lib/media/probe";
@@ -27,14 +28,15 @@ const optNum = (v: string | null) => {
  * Auth is checked here rather than in proxy.ts: the proxy would buffer (and truncate) the body.
  */
 export async function POST(req: Request) {
-  if (!sessionFromRequest(req)) {
+  if (isCrossOriginWrite(req)) return NextResponse.json({ error: "Cross-origin request blocked" }, { status: 403 });
+  if (!sessionFromRequest(req, undefined, sessionsValidAfter())) {
     return NextResponse.json({ error: "Unauthorized: log in first (POST /api/session)" }, { status: 401 });
   }
   if (!req.body) return NextResponse.json({ error: "Empty body" }, { status: 400 });
   const url = new URL(req.url);
   const filename = url.searchParams.get("filename") ?? "upload";
-  const mimeType = req.headers.get("content-type")?.split(";")[0].trim() || undefined;
-  const kind = mimeType?.startsWith("video/") ? "video" : mimeType && IMAGE_TYPES.includes(mimeType) ? "image" : null;
+  const mimeType = req.headers.get("content-type")?.split(";")[0].trim().toLowerCase() || undefined;
+  const kind = mimeType && /^video\/[a-z0-9.+-]+$/.test(mimeType) ? "video" : mimeType && IMAGE_TYPES.includes(mimeType) ? "image" : null;
   if (!kind) {
     return NextResponse.json({ error: `Expected a video or JPEG/PNG/WebP image, got ${mimeType ?? "unknown"}` }, { status: 415 });
   }

@@ -60,15 +60,25 @@ export interface Session {
   u: string;
   iat: number;
   exp: number;
+  /** Issue time in ms (for revocation by logout). */
+  t?: number;
 }
 
 export function signSession(cfg: AuthConfig, now = Date.now()): string {
   const iat = Math.floor(now / 1000);
-  const payload = b64url(JSON.stringify({ u: cfg.username, iat, exp: iat + SESSION_TTL_SEC } satisfies Session));
+  const payload = b64url(JSON.stringify({ u: cfg.username, iat, exp: iat + SESSION_TTL_SEC, t: now } satisfies Session));
   return `${payload}.${b64url(hmac(cfg, payload))}`;
 }
 
-export function verifySession(cfg: AuthConfig, token: string | undefined | null, now = Date.now()): Session | null {
+/**
+ * @param validAfterMs sessions issued before this time are revoked (set by logout).
+ */
+export function verifySession(
+  cfg: AuthConfig,
+  token: string | undefined | null,
+  now = Date.now(),
+  validAfterMs = 0,
+): Session | null {
   if (!token || cfg.disabledReason) return null;
   const [payload, sig] = token.split(".");
   if (!payload || !sig) return null;
@@ -78,6 +88,7 @@ export function verifySession(cfg: AuthConfig, token: string | undefined | null,
   try {
     const s = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Session;
     if (s.u !== cfg.username || typeof s.exp !== "number" || s.exp * 1000 <= now) return null;
+    if ((s.t ?? s.iat * 1000) < validAfterMs) return null;
     return s;
   } catch {
     return null;
@@ -104,9 +115,59 @@ export function isPublicPath(pathname: string): boolean {
   );
 }
 
-/** Only allow same-site relative redirect targets after login. */
-export function safeNext(next: string | null | undefined): string {
-  return next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") ? next : "/dashboard";
+/**
+ * Only allow same-origin relative redirect targets (after login / OAuth). Resolves the value the
+ * way a browser would — which strips tabs/newlines, so "/\t/evil.example" becomes "//evil.example" —
+ * and accepts it only if it stays on our origin. Returns the normalized path.
+ */
+export function safeNext(next: string | null | undefined, fallback = "/dashboard"): string {
+  if (!next || !next.startsWith("/")) return fallback;
+  const base = "http://same-origin.invalid";
+  try {
+    const url = new URL(next, base);
+    if (url.origin !== base) return fallback;
+    return url.pathname + url.search + url.hash;
+  } catch {
+    return fallback;
+  }
+}
+
+const STATE_CHANGING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * CSRF guard for cookie-authenticated, state-changing requests.
+ *
+ * SameSite=Lax already stops cross-*site* requests from carrying the session cookie, but not
+ * same-site ones (another port on localhost, a sibling subdomain), and several endpoints accept
+ * "simple" requests (text/plain bodies or no body). Browsers send `Origin` on all cross-origin
+ * POST/PUT/PATCH/DELETE requests (and `Sec-Fetch-Site`), so we require it to be our own origin.
+ * Non-browser clients (curl, scripts) send neither header and are allowed.
+ */
+export function isCrossOriginWrite(req: Request, env: Record<string, string | undefined> = process.env): boolean {
+  if (!STATE_CHANGING.has(req.method.toUpperCase())) return false;
+  const origin = req.headers.get("origin");
+  if (origin) {
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      return true; // "null" (sandboxed/file) or garbage
+    }
+    const allowed = new Set<string>();
+    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+    if (host) allowed.add(host.split(",")[0].trim());
+    allowed.add(new URL(req.url).host);
+    if (env.APP_URL) {
+      try {
+        allowed.add(new URL(env.APP_URL).host);
+      } catch {
+        /* ignore malformed APP_URL */
+      }
+    }
+    return !allowed.has(originHost);
+  }
+  const site = req.headers.get("sec-fetch-site");
+  return site === "cross-site" || site === "same-site";
 }
 
 export function sessionCookie(token: string, secure: boolean) {
@@ -125,8 +186,71 @@ export const isHttps = (req: Request) =>
   new URL(req.url).protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
 
 /** Parse the session cookie from a raw request (for routes the proxy deliberately skips). */
-export function sessionFromRequest(req: Request, cfg: AuthConfig = getAuthConfig()): Session | null {
+export function sessionFromRequest(req: Request, cfg: AuthConfig = getAuthConfig(), validAfterMs = 0): Session | null {
   const cookie = req.headers.get("cookie") ?? "";
   const m = cookie.match(new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([^;]+)`));
-  return verifySession(cfg, m ? decodeURIComponent(m[1]) : null);
+  let token: string | null = null;
+  try {
+    token = m ? decodeURIComponent(m[1]) : null;
+  } catch {
+    return null; // malformed %-encoding → not a session (not a 500)
+  }
+  return verifySession(cfg, token, Date.now(), validAfterMs);
+}
+
+// ---------------------------------------------------------------------------
+// Login throttling — global, not per-IP: client IPs / X-Forwarded-For are spoofable, and a
+// per-IP lockout behind no proxy would let anyone lock the admin out. Instead, once failures
+// pile up, attempts are serialized with a growing delay (max ~1 attempt per maxDelayMs), and
+// excess concurrent attempts are rejected fast (429). The real admin can still always log in.
+// In-memory, so it resets on restart (fine for a single instance).
+// ---------------------------------------------------------------------------
+
+export const loginThrottle = {
+  windowMs: 15 * 60_000,
+  /** Failures within the window before slowing down. */
+  freeFailures: 5,
+  maxDelayMs: 5_000,
+  /** Max login attempts waiting in line. */
+  maxPending: 20,
+};
+
+let failureTimes: number[] = [];
+let pending = 0;
+let tail: Promise<void> = Promise.resolve();
+
+/** Delay applied to the next attempt, given recent failures. */
+export function loginDelayMs(now = Date.now()): number {
+  failureTimes = failureTimes.filter((t) => now - t < loginThrottle.windowMs);
+  const excess = failureTimes.length - loginThrottle.freeFailures;
+  return excess < 0 ? 0 : Math.min(loginThrottle.maxDelayMs, 250 * 2 ** excess);
+}
+
+/**
+ * Wait for a login slot. Resolves to a `done(success)` callback that must be called once the
+ * credentials were checked, or `null` if too many attempts are already queued.
+ */
+export async function acquireLoginSlot(): Promise<((success: boolean) => void) | null> {
+  if (pending >= loginThrottle.maxPending) return null;
+  pending++;
+  const prev = tail;
+  let release!: () => void;
+  tail = new Promise<void>((r) => (release = r));
+  await prev;
+  const delay = loginDelayMs();
+  if (delay) await new Promise((r) => setTimeout(r, delay));
+  return (success: boolean) => {
+    if (!success) {
+      failureTimes.push(Date.now());
+      if (failureTimes.length > 1000) failureTimes = failureTimes.slice(-1000);
+    }
+    pending--;
+    release();
+  };
+}
+
+export function resetLoginThrottle(): void {
+  failureTimes = [];
+  pending = 0;
+  tail = Promise.resolve();
 }

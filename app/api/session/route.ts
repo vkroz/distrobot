@@ -1,7 +1,9 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { revokeAllSessions, sessionsValidAfter } from "@/lib/auth-store";
 import {
   SESSION_COOKIE,
+  acquireLoginSlot,
   checkCredentials,
   getAuthConfig,
   isHttps,
@@ -14,7 +16,7 @@ import {
 /** Current session + auth configuration warnings (public; used by the nav and login page). */
 export async function GET() {
   const cfg = getAuthConfig();
-  const session = verifySession(cfg, (await cookies()).get(SESSION_COOKIE)?.value);
+  const session = verifySession(cfg, (await cookies()).get(SESSION_COOKIE)?.value, Date.now(), sessionsValidAfter());
   return Response.json({
     authenticated: !!session,
     username: session?.u ?? null,
@@ -49,18 +51,22 @@ export async function POST(req: Request) {
     return Response.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const ok = checkCredentials(cfg, username, password);
+  // Brute-force protection: serialized + increasingly delayed once failures accumulate.
+  const done = await acquireLoginSlot();
+  const busy = done === null;
+  const ok = !busy && checkCredentials(cfg, username, password);
+  done?.(ok || !!cfg.disabledReason);
   if (!ok) {
-    // Slow down online guessing a little.
-    await new Promise((r) => setTimeout(r, 400));
-    const error = cfg.disabledReason ?? "Invalid username or password";
+    const error = busy
+      ? "Too many login attempts right now. Please wait a moment and try again."
+      : (cfg.disabledReason ?? "Invalid username or password");
     if (isForm) {
       const url = new URL("/login", req.url);
       url.searchParams.set("error", error);
       if (next !== "/dashboard") url.searchParams.set("next", next);
       return NextResponse.redirect(url, 303);
     }
-    return Response.json({ error }, { status: cfg.disabledReason ? 503 : 401 });
+    return Response.json({ error }, { status: busy ? 429 : cfg.disabledReason ? 503 : 401 });
   }
 
   const res = isForm
@@ -70,8 +76,13 @@ export async function POST(req: Request) {
   return res;
 }
 
-/** Log out. */
+/** Log out — revokes every existing session (single admin), not just this browser's cookie. */
 export async function DELETE() {
+  // Only an authenticated caller may revoke (the endpoint is public; don't let anyone log the admin out).
+  const cfg = getAuthConfig();
+  if (verifySession(cfg, (await cookies()).get(SESSION_COOKIE)?.value, Date.now(), sessionsValidAfter())) {
+    revokeAllSessions();
+  }
   const res = NextResponse.json({ ok: true });
   res.cookies.delete(SESSION_COOKIE);
   return res;

@@ -17,13 +17,19 @@ import { Badge, Card, PlatformIcon, cx, formatDuration, inputCls } from "../ui";
 export type CreatorState =
   | { status: "loading" }
   | { status: "ok"; source: "api" | "mock"; reason?: string; accountName?: string; creator: TikTokCreatorInfo }
-  | { status: "error"; error: string };
+  | { status: "error"; error: string; retry: () => void };
 
-/** Fetch creator_info once TikTok is selected (TikTok requires showing it on the posting screen). */
+/**
+ * Fetch creator_info while TikTok is selected (TikTok requires showing it on the posting screen).
+ * Refetches whenever it's needed and not loaded yet: a cancelled request (TikTok deselected, React
+ * Strict Mode's mount→unmount→mount in dev) must not leave the state stuck on "loading".
+ */
 export function useTikTokCreator(enabled: boolean): CreatorState | null {
-  const [state, setState] = useState<CreatorState | null>(null);
+  const [state, setState] = useState<Exclude<CreatorState, { status: "error" }> | { status: "error"; error: string } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const loaded = state?.status === "ok";
   useEffect(() => {
-    if (!enabled || state) return;
+    if (!enabled || loaded) return;
     let cancelled = false;
     setState({ status: "loading" });
     fetch("/api/tiktok/creator-info", { cache: "no-store" })
@@ -33,13 +39,14 @@ export function useTikTokCreator(enabled: boolean): CreatorState | null {
         if (!r.ok || !data.creator) setState({ status: "error", error: data.error ?? `Couldn't load TikTok creator info (${r.status})` });
         else setState({ status: "ok", source: data.source, reason: data.reason, accountName: data.account?.displayName, creator: data.creator });
       })
-      .catch((err) => !cancelled && setState({ status: "error", error: (err as Error).message }));
+      .catch((err) => {
+        if (!cancelled) setState({ status: "error", error: (err as Error).message });
+      });
     return () => {
       cancelled = true;
     };
-    // Load once per page; `state` intentionally not a dependency trigger beyond the first fetch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled]);
+  }, [enabled, loaded, attempt]);
+  if (state?.status === "error") return { ...state, retry: () => setAttempt((a) => a + 1) };
   return state;
 }
 
@@ -110,7 +117,14 @@ export function TikTokSettingsCard({
           <div className="text-sm text-red-700 dark:text-red-400">
             <p className="font-medium">TikTok is unavailable right now</p>
             <p className="text-xs">{creatorState.error}</p>
-            <p className="mt-1 text-xs">Publishing to TikTok is disabled until creator info loads. Try again later.</p>
+            <p className="mt-1 text-xs">Publishing to TikTok is disabled until creator info loads.</p>
+            <button
+              type="button"
+              onClick={creatorState.retry}
+              className="mt-2 rounded-md border border-red-300 px-2 py-0.5 text-xs font-medium hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-950"
+            >
+              Retry
+            </button>
           </div>
         ) : (
           <div className="flex items-center gap-3">

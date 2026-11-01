@@ -90,7 +90,11 @@ It returns errors, warnings and suggested adaptations. Text adaptations (truncat
 - **Credentials:** `APP_USERNAME`/`APP_PASSWORD` from env, compared in constant time. `POST /api/session` takes JSON or a form post; `DELETE /api/session` logs out.
 - **Session:** a stateless `cp_session` cookie (HttpOnly, SameSite=Lax, Secure on HTTPS, 7 days) holding a payload signed with HMAC-SHA256. The key is derived from `APP_SESSION_SECRET` *and* the password, so changing either signs everyone out.
 - **Defaults:** in development, unset values fall back to `admin`/`admin` and a built-in secret, with an amber banner. In production (`NODE_ENV=production`) all three are required, otherwise login is disabled with a clear message.
-- **Limits:** one user, no roles, and no brute-force lockout (only a 400 ms delay after a failed login). Put it behind HTTPS if you expose it.
+- **Logout** (`DELETE /api/session`) revokes **every** existing session (single admin): the time is stored in the DB and older session cookies are rejected, not just the current browser's.
+- **Brute force:** after 5 failed logins in 15 min, attempts are processed one at a time with a growing delay (up to 5 s each), and floods get `429`. This is global rather than per-IP, because `X-Forwarded-For` can be spoofed and a per-IP lockout would let anyone lock the admin out; the real admin can always still log in.
+- **CSRF:** POST/PUT/PATCH/DELETE requests whose `Origin` (or `Sec-Fetch-Site`) is another origin get `403`. That covers same-site attackers too (another port on localhost, sibling subdomains), which `SameSite=Lax` alone doesn't. Allowed origins are the request `Host`, `X-Forwarded-Host`, and `APP_URL`, so **behind a reverse proxy that rewrites `Host`, set `APP_URL`** to the public URL.
+- **Open redirects:** `next` / `returnTo` targets are resolved like a browser would and must stay on this origin.
+- **Limits:** one user, no roles. The demo `admin`/`admin` login applies whenever `NODE_ENV` isn't `production`, and `next dev` listens on all interfaces, so don't run the dev server on a reachable network without setting `APP_USERNAME`/`APP_PASSWORD`. Put it behind HTTPS if you expose it.
 
 ### TikTok posting UX
 
@@ -108,16 +112,20 @@ These choices are stored in the TikTok target's `settings` and checked by the sh
 
 After upload, videos are measured on the server with **ffprobe**: duration, plus display width/height corrected for phone rotation metadata. The binary is looked up in this order: `FFPROBE_PATH`, the bundled `@ffprobe-installer` binary (an *optional* npm dependency, about 75 MB, Linux/macOS/Windows), then `ffprobe` on `PATH`. If none runs or the file can't be parsed, the browser-reported values are used, field by field. `media.metadataSource` records `ffprobe` or `client`, and compose shows which one applied. Validation always uses the stored values.
 
+ffprobe runs with `-protocol_whitelist file` and a container whitelist (mp4/mov/webm/mkv/…), so an uploaded HLS playlist or concat list can't make the server fetch URLs or open other local files. Only known media extensions are kept for stored files, and `/api/media/<id>` serves files only as `video/*` or JPEG/PNG/WebP, with `nosniff`, a sandbox CSP and Range support (seeking, Safari).
+
 ### Restart safety (single instance)
 
 The worker runs **inside the Next.js server process**. Run **one app instance** per database.
 
 - **Lease:** on start, the worker takes a single-row lease in SQLite (`worker_lease`) and renews it on every poll. A second process using the same database (e.g. `next dev` beside `next start`) stays in **standby**: it claims no jobs and leaves the other process's uploads alone. It takes over only when the holder is gone. If the holder was on the same host and its pid no longer exists (e.g. after `kill -9`), the takeover is immediate; otherwise it waits until the heartbeat is older than max(60 s, 6 × interval). A graceful shutdown (SIGTERM/SIGINT) releases the lease immediately.
-- **Recovery:** when the lease is acquired, jobs left `uploading` by a crashed or killed process are recovered.
-  - With attempts left, they are re-queued immediately with the message "Interrupted by a server restart during upload (attempt n/m); re-queued automatically". Adapters with resume checkpoints (YouTube, TikTok, X, Facebook, Vimeo) continue the upload instead of starting over.
-  - With no attempts left, they are marked `failed` with a message asking you to check the platform for a partial post and retry manually.
-- **Caveat:** if the platform accepted the post just before the crash but we never recorded it, a retry can post twice. Each platform's API decides whether that's prevented.
-- **`/api/health`** reports `worker.running` and `worker.holdsLease`. In standby, `POST /api/jobs/run` returns `409`.
+- **Recovery:** when the lease is acquired, jobs left `uploading` by a crashed or killed process are recovered, but only automatically when that can't post twice.
+  - **Re-queued immediately** ("Interrupted by a server restart during upload (attempt n/m); re-queued automatically"): dry-run jobs, and real jobs whose adapter had saved a resume checkpoint (YouTube, TikTok, X, Facebook, Vimeo, Instagram, LinkedIn). Those adapters re-check their upload session instead of starting over.
+  - **Marked `failed`** with "It may already have been posted on the platform: check there first, then retry manually": real uploads interrupted before any checkpoint, and jobs with no attempts left.
+- **Caveat:** a small window remains in which a checkpointed adapter has already created the post but not yet recorded it (e.g. X between creating the post and our DB update); a retry could post twice there.
+- **`/api/health`** (public) reports `worker.running`, `worker.holdsLease` and `worker.busy`. In standby, `POST /api/jobs/run` returns `409`; with `WORKER_DISABLED=true` it takes the lease just for that run.
+- **Shutdown:** on SIGTERM/SIGINT the worker stops and releases the lease, and Next's own graceful shutdown proceeds (no forced exit).
+- **Disk cleanup:** uploads that no post references (replaced videos, never-saved composes) are deleted after 24 h by the lease holder.
 - **Not distributed:** the lease isn't a distributed lock. Multiple hosts or serverless deployments need a real queue.
 
 ## What is real vs. simulated

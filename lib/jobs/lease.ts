@@ -27,10 +27,13 @@ export function readLease(db: DB): LeaseRow | null {
  * Owner ids look like `host:pid:random`. If the holder ran on this host and its pid is gone, it
  * crashed (e.g. kill -9) and its lease can be taken immediately instead of waiting for staleness.
  */
-export function isDeadLocalOwner(owner: string, hostname: string): boolean {
+export function isDeadLocalOwner(owner: string, hostname: string, self?: string): boolean {
   const [host, pidStr] = owner.split(":");
   const pid = Number(pidStr);
-  if (host !== hostname || !Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  if (host !== hostname || !Number.isInteger(pid) || pid <= 0) return false;
+  // Same host + same pid but a different owner id = a previous run of this process (containers
+  // often reuse pids across restarts), so that holder is certainly gone.
+  if (pid === process.pid) return self !== undefined && owner !== self;
   try {
     process.kill(pid, 0); // signal 0 = existence check
     return false;

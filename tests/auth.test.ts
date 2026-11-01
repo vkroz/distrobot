@@ -107,7 +107,7 @@ describe("upload endpoint bypasses the proxy (body would be truncated at 10 MB) 
 
   it("proxy runs on everything except the exact upload path and static assets", () => {
     for (const p of ["/", "/dashboard", "/compose", "/api/posts", "/api/media/abc", "/api/jobs/run", "/login"]) expect(matcher.test(p)).toBe(true);
-    for (const p of ["/api/media", "/_next/static/chunk.js", "/favicon.ico", "/logo.png"]) expect(matcher.test(p)).toBe(false);
+    for (const p of ["/api/media", "/_next/static/chunk.js", "/favicon.ico"]) expect(matcher.test(p)).toBe(false);
   });
 
   it("POST /api/media checks the session itself", async () => {

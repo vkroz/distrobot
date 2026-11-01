@@ -78,8 +78,27 @@ export function ffprobeCandidates(env: Record<string, string | undefined> = proc
 
 type RunResult = { kind: "ok"; stdout: string } | { kind: "missing" } | { kind: "failed" };
 
+/**
+ * Containers we accept for uploaded videos. ffprobe picks a demuxer from the file's *content*, so
+ * without this an uploaded HLS playlist / concat list could make it open URLs or local files (SSRF).
+ */
+export const PROBE_FORMAT_WHITELIST = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,flv,mpeg,mpegts,asf,mxf,ogg";
+
+export function ffprobeArgs(file: string): string[] {
+  return [
+    "-v", "error",
+    "-protocol_whitelist", "file", // never touch the network
+    "-format_whitelist", PROBE_FORMAT_WHITELIST,
+    "-print_format", "json",
+    "-show_format",
+    "-show_streams",
+    // "file:" prefix so a path can never be parsed as an option or another protocol.
+    `file:${path.resolve(file)}`,
+  ];
+}
+
 function run(bin: string, file: string, timeoutMs: number): Promise<RunResult> {
-  const args = ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", file];
+  const args = ffprobeArgs(file);
   return new Promise((resolve) => {
     execFile(bin, args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
       if (!err) return resolve({ kind: "ok", stdout });

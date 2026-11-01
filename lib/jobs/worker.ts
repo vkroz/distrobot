@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { getDb, type DB } from "@/lib/db";
-import { claimNextJob, requeueOrphanedJobs } from "@/lib/db/repo";
+import { getAdapter as defaultGetAdapter } from "@/lib/adapters";
+import { claimNextJob, deleteOrphanMedia, requeueOrphanedJobs } from "@/lib/db/repo";
+import { deleteStoredFile } from "@/lib/storage/local";
 import type { PublishJob } from "@/lib/types";
 import { acquireLease, isDeadLocalOwner, readLease, releaseLease, renewLease, type LeaseRow } from "./lease";
-import { executeJob, type RunnerOptions } from "./runner";
+import { dryRunModeFromEnv, executeJob, shouldDryRun, type RunnerOptions } from "./runner";
 
 export interface WorkerOptions extends RunnerOptions {
   concurrency?: number;
@@ -13,7 +15,11 @@ export interface WorkerOptions extends RunnerOptions {
   leaseStaleMs?: number;
   /** Lease owner id (defaults to host:pid:random). */
   owner?: string;
+  /** Uploads not referenced by any post are deleted after this long (default 24 h; 0 disables). */
+  orphanMediaMaxAgeMs?: number;
 }
+
+const HOUR = 60 * 60_000;
 
 const envInt = (name: string, fallback: number) => {
   const n = Number(process.env[name]);
@@ -86,16 +92,41 @@ export class PublishWorker {
     this.holdsLease = false;
   }
 
+  /**
+   * A job interrupted mid-upload is only retried automatically if that can't post twice: it was a
+   * dry-run, or the adapter saved a resume checkpoint (it re-checks the upload session on retry).
+   */
+  private canAutoRetry = (job: PublishJob): boolean => {
+    if (job.checkpoint != null) return true;
+    const adapter = (this.opts.getAdapter ?? defaultGetAdapter)(job.platform);
+    return shouldDryRun(adapter, job, this.opts.dryRunMode ?? dryRunModeFromEnv());
+  };
+
+  private lastGc = 0;
+
+  /** Periodically delete uploads nobody references (replaced/abandoned videos fill the disk otherwise). */
+  gcOrphanMedia(now = Date.now()): string[] {
+    const maxAge = this.opts.orphanMediaMaxAgeMs ?? 24 * HOUR;
+    if (!maxAge) return [];
+    this.lastGc = now;
+    const paths = deleteOrphanMedia(this.db, maxAge, now);
+    for (const p of paths) void deleteStoredFile(p, this.opts.uploadDir).catch(() => undefined);
+    return paths;
+  }
+
   /** Renew our lease, or try to acquire it; on (re)acquisition recover orphaned jobs. */
   private heartbeat(): void {
-    if (this.holdsLease && renewLease(this.db, this.owner)) return;
+    if (this.holdsLease && renewLease(this.db, this.owner)) {
+      if (Date.now() - this.lastGc > HOUR) this.gcOrphanMedia();
+      return;
+    }
     const wasHolding = this.holdsLease;
     this.holdsLease = acquireLease(this.db, this.owner, this.leaseStaleMs, new Date(), (o) =>
-      isDeadLocalOwner(o, os.hostname()),
+      isDeadLocalOwner(o, os.hostname(), this.owner),
     );
     if (this.holdsLease && !wasHolding) {
       // Anything still `uploading` belongs to a process that no longer holds the lease (crashed/restarted).
-      this.lastRecovered = requeueOrphanedJobs(this.db, this.inFlight.keys());
+      this.lastRecovered = requeueOrphanedJobs(this.db, this.inFlight.keys(), this.canAutoRetry);
       if (this.lastRecovered.length) {
         console.warn(`[worker] recovered ${this.lastRecovered.length} job(s) interrupted by a previous process`);
       }
@@ -137,6 +168,22 @@ export class PublishWorker {
     return results;
   }
 
+  /**
+   * Manual tick (POST /api/jobs/run). If the background worker isn't running in this process
+   * (WORKER_DISABLED), take the lease just for this run so we never race another process.
+   * Returns null when another process holds the lease.
+   */
+  async runDueExclusive(): Promise<PublishJob[] | null> {
+    if (this.leaseMode) return this.active ? this.runDue() : null;
+    const got = acquireLease(this.db, this.owner, this.leaseStaleMs, new Date(), (o) => isDeadLocalOwner(o, os.hostname(), this.owner));
+    if (!got) return null;
+    try {
+      return await this.runDue();
+    } finally {
+      releaseLease(this.db, this.owner);
+    }
+  }
+
   /** Wait for currently running jobs (tests / graceful shutdown). */
   async idle(): Promise<void> {
     while (this.inFlight.size > 0) await Promise.allSettled([...this.inFlight.values()]);
@@ -164,10 +211,11 @@ export function ensureWorker(): PublishWorker {
   if (!disabled && !worker.running) {
     worker.start();
     // Release the lease on shutdown so a restarted server can take over immediately.
+    // Next.js installs its own graceful-shutdown handlers; only exit ourselves if nobody else will.
     for (const sig of ["SIGTERM", "SIGINT"] as const) {
       process.once(sig, () => {
         worker.stop();
-        process.exit(0);
+        if (process.listenerCount(sig) === 0) process.exit(sig === "SIGTERM" ? 143 : 130);
       });
     }
   }
