@@ -6,6 +6,7 @@ import { PLATFORM_RULES } from "@/lib/platforms/rules";
 import type { PostSummary, TargetSummary } from "@/lib/services/posts";
 import type { JobStatus, PostStatus } from "@/lib/types";
 import { Badge, Card, PlatformIcon, btn, cx, formatDateTime, formatDuration, relativeTime, type Tone } from "../ui";
+import { MonthCalendar, UpcomingList } from "./schedule";
 
 const POST_TONE: Record<PostStatus, Tone> = {
   draft: "neutral",
@@ -18,17 +19,28 @@ const POST_TONE: Record<PostStatus, Tone> = {
 
 const JOB_TONE: Record<JobStatus, Tone> = { queued: "neutral", uploading: "blue", published: "green", failed: "red" };
 
-const isActive = (p: PostSummary) => p.targets.some((t) => t.job && (t.job.status === "queued" || t.job.status === "uploading"));
+/** In flight = uploading, or queued and due within a few seconds (scheduled/backoff jobs far out don't count). */
+const isActive = (p: PostSummary, now = Date.now()) =>
+  p.targets.some(
+    (t) =>
+      t.job &&
+      (t.job.status === "uploading" ||
+        (t.job.status === "queued" && (!t.job.nextRunAt || Date.parse(t.job.nextRunAt) <= now + 5000))),
+  );
+const hasPending = (p: PostSummary) => p.targets.some((t) => t.job?.status === "queued");
 
 function TargetRow({ target, onRetry, retrying }: { target: TargetSummary; onRetry: (jobId: string) => void; retrying: boolean }) {
   const job = target.job;
   const name = PLATFORM_RULES[target.platform].displayName;
   const waiting = job?.status === "queued" && job.nextRunAt && Date.parse(job.nextRunAt) > Date.now();
-  const payload = (job?.resultPayload ?? null) as { warnings?: string[]; dryRun?: boolean } | null;
+  const payload = (job?.resultPayload ?? null) as { warnings?: string[]; dryRun?: boolean; scheduledAt?: string | null } | null;
+  // Natively scheduled (e.g. YouTube publishAt): uploaded now, goes public later.
+  const goesLiveAt =
+    job?.status === "published" && payload?.scheduledAt && Date.parse(payload.scheduledAt) > Date.now() ? payload.scheduledAt : null;
   const isDryRunLink = job?.resultUrl?.startsWith("/dry-run/");
 
   return (
-    <li className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center">
+    <li className="flex flex-col gap-2 py-3 sm:flex-row sm:flex-wrap sm:items-center">
       <div className="flex min-w-0 flex-1 items-center gap-3">
         <PlatformIcon platform={target.platform} size="sm" />
         <span className="w-28 shrink-0 text-sm font-medium">{name}</span>
@@ -40,6 +52,11 @@ function TargetRow({ target, onRetry, retrying }: { target: TargetSummary; onRet
               {waiting && job.attempts === 0 ? "scheduled" : waiting ? "retrying" : job.status}
             </Badge>
             {job.dryRun || payload?.dryRun || isDryRunLink ? <Badge tone="amber">dry-run</Badge> : null}
+            {goesLiveAt && (
+              <span className="text-xs text-violet-600" title={formatDateTime(goesLiveAt)}>
+                uploaded · goes live {relativeTime(goesLiveAt)}
+              </span>
+            )}
             {job.status === "uploading" && (
               <div className="flex items-center gap-2">
                 <div className="h-1.5 w-28 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
@@ -149,12 +166,18 @@ function PostCard({
   );
 }
 
-export function Dashboard({ highlight }: { highlight: string | null }) {
+export function Dashboard({ highlight, initialView = "list" }: { highlight: string | null; initialView?: "list" | "calendar" }) {
   const [posts, setPosts] = useState<PostSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<Set<string>>(new Set());
+  const [view, setView] = useState<"list" | "calendar">(initialView);
+  const [selected, setSelected] = useState<string | null>(highlight);
+  const select = (id: string) => {
+    setView("list");
+    setSelected(id);
+  };
 
   const load = useCallback(async () => {
     try {
@@ -172,12 +195,14 @@ export function Dashboard({ highlight }: { highlight: string | null }) {
     load();
   }, [load]);
 
-  const active = posts?.some(isActive) ?? false;
+  const active = posts?.some((p) => isActive(p)) ?? false;
+  const pending = posts?.some(hasPending) ?? false;
   useEffect(() => {
-    if (!active) return;
-    const t = setInterval(load, 2000);
+    // Fast refresh while jobs are in flight; slow refresh so scheduled/retrying jobs show up when they start.
+    if (!active && !pending) return;
+    const t = setInterval(load, active ? 2000 : 15000);
     return () => clearInterval(t);
-  }, [active, load]);
+  }, [active, pending, load]);
 
   async function runWorker() {
     setRunning(true);
@@ -235,6 +260,9 @@ export function Dashboard({ highlight }: { highlight: string | null }) {
           <button type="button" className={btn.secondary} onClick={() => load()}>
             Refresh
           </button>
+          <Link href="/compose" className={btn.secondary}>
+            New post
+          </Link>
           <button type="button" className={btn.primary} onClick={runWorker} disabled={running}>
             {running ? "Running…" : "Run worker now"}
           </button>
@@ -268,11 +296,38 @@ export function Dashboard({ highlight }: { highlight: string | null }) {
           </Link>
         </Card>
       ) : (
-        <div className="space-y-4">
-          {posts.map((p) => (
-            <PostCard key={p.id} post={p} highlighted={p.id === highlight} onRetry={retry} retrying={retrying} />
-          ))}
-        </div>
+        <>
+          <UpcomingList posts={posts} onSelect={select} />
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold">{view === "list" ? "Publication history" : "Calendar"}</h2>
+            <div className="inline-flex rounded-lg border border-neutral-200 p-0.5 text-sm dark:border-neutral-800" role="tablist">
+              {(["list", "calendar"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  role="tab"
+                  aria-selected={view === v}
+                  onClick={() => setView(v)}
+                  className={cx(
+                    "rounded-md px-3 py-1 capitalize",
+                    view === v ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900" : "text-neutral-500",
+                  )}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          </div>
+          {view === "calendar" ? (
+            <MonthCalendar posts={posts} onSelect={select} />
+          ) : (
+            <div className="space-y-4">
+              {posts.map((p) => (
+                <PostCard key={p.id} post={p} highlighted={p.id === selected} onRetry={retry} retrying={retrying} />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

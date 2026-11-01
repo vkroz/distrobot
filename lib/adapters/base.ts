@@ -58,6 +58,10 @@ export abstract class BaseAdapter implements PlatformAdapter {
     };
   }
 
+  get credentialEnvVars(): string[] {
+    return [this.oauth.clientIdEnv, this.oauth.clientSecretEnv];
+  }
+
   isConfigured(): boolean {
     return readClientCredentials(this.oauth) !== null;
   }

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from "react";
 import { PLATFORM_RULES } from "@/lib/platforms/rules";
 import type { PlatformStatus, PublicAccount } from "@/lib/services/posts";
 import { isPlatformId } from "@/lib/types";
-import { PLATFORM_META } from "../platform-meta";
 import { Badge, Card, PlatformIcon, btn, cx, formatDateTime } from "../ui";
 
 const MODE_TEXT: Record<string, { tone: string; text: string }> = {
@@ -132,10 +131,10 @@ export function AccountsView({ connected, error }: { connected: string | null; e
                     Add OAuth credentials to <code className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">.env</code> to enable real publishing:
                   </p>
                   <pre className="overflow-x-auto rounded-lg bg-neutral-100 p-2 text-[11px] dark:bg-neutral-950">
-                    {PLATFORM_META[p.platform].env.map((e) => `${e}=…`).join("\n")}
+                    {p.envVars.map((e) => `${e}=…`).join("\n")}
                   </pre>
                   <p>
-                    Redirect URI: <code className="break-all">{`{APP_URL}/api/auth/${p.platform}/callback`}</code>
+                    Redirect URI to register: <code className="break-all">{p.redirectUri}</code>
                   </p>
                   <p>Until then, posts to {p.displayName} run as dry-run simulations.</p>
                 </div>

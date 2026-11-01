@@ -219,7 +219,7 @@ export function getPostSummary(db: DB, id: string): PostSummary | null {
   };
 }
 
-export function listPostSummaries(db: DB, limit = 50): PostSummary[] {
+export function listPostSummaries(db: DB, limit = 200): PostSummary[] {
   return listPosts(db, limit)
     .map((p) => getPostSummary(db, p.id))
     .filter((p): p is PostSummary => p !== null);
@@ -254,6 +254,10 @@ export interface PlatformStatus {
   /** Jobs for this platform would currently run as dry-run. */
   dryRun: boolean;
   capabilities: PlatformAdapter["capabilities"];
+  /** Env vars to set to enable real publishing. */
+  envVars: string[];
+  /** OAuth redirect URI to register with the provider. */
+  redirectUri: string;
   accounts: PublicAccount[];
 }
 
@@ -261,6 +265,7 @@ export function platformStatuses(
   db: DB,
   adapters: PlatformAdapter[],
   mode: DryRunMode = dryRunModeFromEnv(),
+  baseUrl = "http://localhost:3000",
 ): PlatformStatus[] {
   return adapters.map((a) => ({
     platform: a.platform,
@@ -268,6 +273,8 @@ export function platformStatuses(
     configured: a.isConfigured(),
     dryRun: shouldDryRun(a, { dryRun: false }, mode),
     capabilities: a.capabilities,
+    envVars: a.credentialEnvVars,
+    redirectUri: `${baseUrl}/api/auth/${a.platform}/callback`,
     accounts: listAccounts(db, a.platform).map(toPublicAccount),
   }));
 }

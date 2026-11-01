@@ -91,6 +91,8 @@ export interface PlatformAdapter {
   readonly displayName: string;
   readonly capabilities: AdapterCapabilities;
 
+  /** Env vars holding this platform's OAuth client credentials. */
+  readonly credentialEnvVars: string[];
   /** Whether OAuth client credentials are present in the environment. */
   isConfigured(): boolean;
   /** Rules, tightened/relaxed for a specific account (e.g. TikTok creator limits, X Premium). */

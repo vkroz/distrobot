@@ -12,7 +12,8 @@
     "start": "next start",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke": "bash scripts/smoke-dry-run.sh"
   },
   "dependencies": {
     "next": "^16.4.3",
