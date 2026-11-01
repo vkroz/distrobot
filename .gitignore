@@ -1,0 +1,12 @@
+node_modules
+.next
+.env
+*.db
+.claude-session-id
+data/
+!.env.example
+next-env.d.ts
+*.tsbuildinfo
+*.db-journal
+*.db-wal
+*.db-shm
