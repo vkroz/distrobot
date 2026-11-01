@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
+import { MB } from "@/lib/platforms/rules";
 import { getDb } from "@/lib/db";
 import { createMedia } from "@/lib/db/repo";
 import { GB } from "@/lib/platforms/rules";
 import { saveStream } from "@/lib/storage/local";
 
-export const runtime = "nodejs";
-
-const MAX_UPLOAD_BYTES = 10 * GB;
+const MAX_VIDEO_BYTES = 10 * GB;
+/** YouTube's custom thumbnail limit is 2 MB; allow some headroom for other platforms. */
+const MAX_IMAGE_BYTES = 10 * MB;
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 const optNum = (v: string | null) => {
   const n = v === null ? NaN : Number(v);
@@ -14,7 +16,7 @@ const optNum = (v: string | null) => {
 };
 
 /**
- * Raw-body upload (streamed to ./data/uploads, never buffered in memory).
+ * Raw-body upload of a video or thumbnail image (streamed to ./data/uploads, never buffered in memory).
  *   POST /api/media?filename=clip.mp4&durationSec=12.3&width=1080&height=1920
  *   Content-Type: video/mp4
  * Duration/dimensions are client-reported (read from a <video> element) until server-side probing exists.
@@ -24,12 +26,14 @@ export async function POST(req: Request) {
   const url = new URL(req.url);
   const filename = url.searchParams.get("filename") ?? "upload";
   const mimeType = req.headers.get("content-type")?.split(";")[0].trim() || undefined;
-  if (mimeType && !mimeType.startsWith("video/")) {
-    return NextResponse.json({ error: `Expected a video, got ${mimeType}` }, { status: 415 });
+  const kind = mimeType?.startsWith("video/") ? "video" : mimeType && IMAGE_TYPES.includes(mimeType) ? "image" : null;
+  if (!kind) {
+    return NextResponse.json({ error: `Expected a video or JPEG/PNG/WebP image, got ${mimeType ?? "unknown"}` }, { status: 415 });
   }
   try {
-    const stored = await saveStream(req.body, filename, { maxBytes: MAX_UPLOAD_BYTES });
+    const stored = await saveStream(req.body, filename, { maxBytes: kind === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES });
     const media = createMedia(getDb(), {
+      kind,
       originalFilename: filename,
       storagePath: stored.storagePath,
       mimeType,

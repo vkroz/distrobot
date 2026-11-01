@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { validateForPlatform } from "@/lib/platforms/validate";
 import { isPlatformId, PLATFORM_IDS, type MediaInfo, type TargetContent } from "@/lib/types";
 
-export const runtime = "nodejs";
 
 /**
  * POST { content: {title, caption, hashtags}, media?: MediaInfo, platforms?: PlatformId[] }

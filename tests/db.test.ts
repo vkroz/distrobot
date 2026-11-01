@@ -172,3 +172,14 @@ describe("state helpers", () => {
     expect(derivePostStatus(["failed"])).toBe("failed");
   });
 });
+
+describe("oauth states", () => {
+  it("are single-use and platform-bound", async () => {
+    const { createOAuthState, consumeOAuthState } = await import("@/lib/db/repo");
+    createOAuthState(db, { state: "s1", platform: "x", codeVerifier: "v", redirectUri: "http://l/cb", returnTo: "/accounts" });
+    expect(consumeOAuthState(db, "s1", "youtube")).toBeNull(); // wrong platform consumes it too
+    createOAuthState(db, { state: "s2", platform: "x", codeVerifier: "v", redirectUri: "http://l/cb" });
+    expect(consumeOAuthState(db, "s2", "x")).toEqual({ codeVerifier: "v", redirectUri: "http://l/cb", returnTo: null });
+    expect(consumeOAuthState(db, "s2", "x")).toBeNull();
+  });
+});

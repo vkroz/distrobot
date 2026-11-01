@@ -18,6 +18,11 @@ export function isPlatformId(value: unknown): value is PlatformId {
 export const JOB_STATUSES = ["queued", "uploading", "published", "failed"] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
+export const VISIBILITIES = ["public", "unlisted", "private"] as const;
+export type Visibility = (typeof VISIBILITIES)[number];
+
+export type MediaKind = "video" | "image";
+
 export const POST_STATUSES = ["draft", "scheduled", "publishing", "published", "partial", "failed"] as const;
 export type PostStatus = (typeof POST_STATUSES)[number];
 
@@ -32,6 +37,7 @@ export interface MediaInfo {
 
 export interface Media extends MediaInfo {
   id: string;
+  kind: MediaKind;
   originalFilename: string;
   storagePath: string;
   checksum: string | null;
@@ -44,6 +50,8 @@ export interface Post {
   caption: string;
   hashtags: string[];
   mediaId: string | null;
+  thumbnailId: string | null;
+  visibility: Visibility;
   status: PostStatus;
   scheduledAt: string | null;
   createdAt: string;
@@ -75,7 +83,13 @@ export interface PublishJob {
   attempts: number;
   maxAttempts: number;
   dryRun: boolean;
+  /** 0..1 while uploading. */
+  progress: number | null;
+  /** Adapter-owned resume state (e.g. YouTube resumable session URI). */
+  checkpoint: unknown;
   resultUrl: string | null;
+  /** What was (or would have been) sent to the platform. */
+  resultPayload: unknown;
   externalId: string | null;
   error: string | null;
   nextRunAt: string | null;

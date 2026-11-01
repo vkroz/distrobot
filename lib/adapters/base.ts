@@ -1,10 +1,21 @@
 import { getRules, type PlatformRuleOverrides, type PlatformRules } from "@/lib/platforms/rules";
 import { validateForPlatform, type ValidationResult } from "@/lib/platforms/validate";
 import type { ConnectedAccount, MediaInfo, PlatformId, TargetContent } from "@/lib/types";
-import { buildAuthUrl, exchangeCode, readClientCredentials, type OAuthConfig, type TokenResponse } from "./oauth";
+import { sleep } from "./http";
+import {
+  buildAuthUrl,
+  exchangeCode,
+  readClientCredentials,
+  refreshToken,
+  type OAuthConfig,
+  type TokenResponse,
+} from "./oauth";
 import {
   AdapterError,
   type AccountCredentials,
+  type AdapterCapabilities,
+  type DoPublishResult,
+  type RefreshedTokens,
   type AuthUrlParams,
   type CallbackParams,
   type PlatformAdapter,
@@ -19,9 +30,12 @@ export interface Profile {
   metadata?: Record<string, unknown>;
 }
 
+/** Default simulated latency for dry-run publishes. */
+const DEFAULT_DRY_RUN_DELAY_MS = 1500;
+
 /**
- * Shared adapter behaviour: rule-based validation, dry-run, generic OAuth2 code flow.
- * Subclasses provide `fetchProfile` and (eventually) `doPublish`.
+ * Shared adapter behaviour: rule-based validation, dry-run, generic OAuth2 code flow + refresh.
+ * Subclasses provide `fetchProfile` and `doPublish`.
  */
 export abstract class BaseAdapter implements PlatformAdapter {
   abstract readonly platform: PlatformId;
@@ -31,11 +45,16 @@ export abstract class BaseAdapter implements PlatformAdapter {
     return getRules(this.platform).displayName;
   }
 
-  get capabilities() {
+  /** Subclasses declare optional features. */
+  protected readonly features: { nativeScheduling?: boolean; thumbnail?: boolean; refreshTokens?: boolean } = {};
+
+  get capabilities(): AdapterCapabilities {
     return {
       pkce: !!this.oauth.pkce,
-      refreshTokens: true,
+      refreshTokens: this.features.refreshTokens ?? true,
       publish: this.doPublish !== BaseAdapter.prototype.doPublish,
+      nativeScheduling: !!this.features.nativeScheduling,
+      thumbnail: !!this.features.thumbnail,
     };
   }
 
@@ -67,26 +86,48 @@ export abstract class BaseAdapter implements PlatformAdapter {
       );
     }
     const warnings = validation.warnings.map((w) => w.message);
+    const payload = {
+      ...validation.effective,
+      visibility: req.visibility,
+      scheduledAt: req.scheduledAt ?? null,
+      thumbnail: !!req.thumbnail && this.capabilities.thumbnail,
+    };
     if (ctx.dryRun) {
+      await this.simulateUpload(ctx);
       return {
-        url: `https://dry-run.invalid/${this.platform}/${req.jobId}`,
+        url: `/dry-run/${req.jobId}`,
         externalId: `dry-run-${req.jobId}`,
         dryRun: true,
-        payload: validation.effective,
+        payload,
         warnings,
       };
     }
     if (!ctx.account) throw new AdapterError("no_account", `No ${this.displayName} account connected.`);
     const result = await this.doPublish(req, { ...ctx, account: ctx.account }, validation);
-    return { ...result, dryRun: false, payload: validation.effective, warnings: [...warnings, ...(result.warnings ?? [])] };
+    return {
+      url: result.url,
+      externalId: result.externalId,
+      dryRun: false,
+      payload: { ...payload, ...result.extra },
+      warnings: [...warnings, ...(result.warnings ?? [])],
+    };
   }
 
-  /** Real upload. Not implemented for any platform yet (Stage 2). */
+  private async simulateUpload(ctx: PublishContext): Promise<void> {
+    const total = ctx.simulatedDelayMs ?? DEFAULT_DRY_RUN_DELAY_MS;
+    const steps = 4;
+    for (let i = 1; i <= steps; i++) {
+      await sleep(total / steps, ctx.signal);
+      ctx.onProgress?.({ phase: "uploading", fraction: i / steps });
+    }
+  }
+
+  /** Real upload. Override per platform. */
   protected async doPublish(
     _req: PublishRequest,
     _ctx: PublishContext & { account: ConnectedAccount },
     _validation: ValidationResult,
-  ): Promise<{ url: string | null; externalId: string | null; warnings?: string[] }> {
+  ): Promise<DoPublishResult> {
     throw new AdapterError("not_implemented", `Publishing to ${this.displayName} is not implemented yet.`);
   }
 
@@ -123,6 +164,24 @@ export abstract class BaseAdapter implements PlatformAdapter {
       scopes: token.scope ? token.scope.split(/[\s,]+/).filter(Boolean) : this.oauth.scopes,
       metadata: profile.metadata ?? {},
     };
+  }
+
+  /** Standard OAuth2 refresh_token grant. Override for platforms with non-standard refresh. */
+  async refreshAccessToken(account: ConnectedAccount, fetchImpl: typeof fetch = fetch): Promise<RefreshedTokens> {
+    const creds = readClientCredentials(this.oauth);
+    if (!creds) throw new AdapterError("not_configured", `${this.displayName} OAuth is not configured.`);
+    if (!account.refreshToken) throw new AdapterError("auth_failed", `${this.displayName} account has no refresh token; reconnect it.`);
+    try {
+      const token = await refreshToken(this.oauth, creds, account.refreshToken, fetchImpl);
+      return {
+        accessToken: token.access_token,
+        // Many providers (Google) omit the refresh token on refresh: keep the old one.
+        refreshToken: token.refresh_token ?? account.refreshToken,
+        expiresAt: token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : null,
+      };
+    } catch (err) {
+      throw new AdapterError("auth_failed", `Token refresh failed: ${(err as Error).message}`);
+    }
   }
 
   /** Identify the connected account using the fresh token. */

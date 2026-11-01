@@ -58,7 +58,44 @@ export interface TokenResponse {
   [key: string]: unknown;
 }
 
-export async function exchangeCode(
+async function tokenRequest(
+  cfg: OAuthConfig,
+  creds: { clientId: string; clientSecret: string },
+  body: URLSearchParams,
+  fetchImpl: typeof fetch,
+): Promise<TokenResponse> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/x-www-form-urlencoded",
+    Accept: "application/json",
+  };
+  if (cfg.tokenAuth === "basic") {
+    headers.Authorization = `Basic ${Buffer.from(`${creds.clientId}:${creds.clientSecret}`).toString("base64")}`;
+    // Some providers (X) still want client_id in the body.
+    body.set(cfg.clientIdParam ?? "client_id", creds.clientId);
+  } else {
+    body.set(cfg.clientIdParam ?? "client_id", creds.clientId);
+    body.set("client_secret", creds.clientSecret);
+  }
+  const res = await fetchImpl(cfg.tokenUrl, { method: "POST", headers, body });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Token request failed (${res.status}): ${text.slice(0, 500)}`);
+  const data = JSON.parse(text) as TokenResponse & { data?: TokenResponse };
+  // Some providers nest the token under `data`.
+  const token = data.access_token ? data : data.data;
+  if (!token?.access_token) throw new Error("Token response missing access_token");
+  return token;
+}
+
+export function refreshToken(
+  cfg: OAuthConfig,
+  creds: { clientId: string; clientSecret: string },
+  refresh: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<TokenResponse> {
+  return tokenRequest(cfg, creds, new URLSearchParams({ grant_type: "refresh_token", refresh_token: refresh }), fetchImpl);
+}
+
+export function exchangeCode(
   cfg: OAuthConfig,
   creds: { clientId: string; clientSecret: string },
   p: { code: string; redirectUri: string; codeVerifier?: string },
@@ -70,24 +107,5 @@ export async function exchangeCode(
     redirect_uri: p.redirectUri,
   });
   if (p.codeVerifier) body.set("code_verifier", p.codeVerifier);
-  const headers: Record<string, string> = {
-    "Content-Type": "application/x-www-form-urlencoded",
-    Accept: "application/json",
-  };
-  if (cfg.tokenAuth === "basic") {
-    headers.Authorization = `Basic ${Buffer.from(`${creds.clientId}:${creds.clientSecret}`).toString("base64")}`;
-    // Some providers (X) still want client_id in the body for PKCE public-style flows.
-    body.set(cfg.clientIdParam ?? "client_id", creds.clientId);
-  } else {
-    body.set(cfg.clientIdParam ?? "client_id", creds.clientId);
-    body.set("client_secret", creds.clientSecret);
-  }
-  const res = await fetchImpl(cfg.tokenUrl, { method: "POST", headers, body });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Token exchange failed (${res.status}): ${text.slice(0, 500)}`);
-  const data = JSON.parse(text) as TokenResponse & { data?: TokenResponse };
-  // TikTok v1-style responses nest under `data`.
-  const token = data.access_token ? data : data.data;
-  if (!token?.access_token) throw new Error("Token response missing access_token");
-  return token;
+  return tokenRequest(cfg, creds, body, fetchImpl);
 }

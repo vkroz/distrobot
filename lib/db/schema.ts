@@ -87,4 +87,30 @@ export const MIGRATIONS: Array<{ version: number; name: string; sql: string }> =
       CREATE INDEX idx_publish_jobs_post ON publish_jobs(post_id);
     `,
   },
+  {
+    version: 2,
+    name: "compose_and_pipeline",
+    sql: /* sql */ `
+      ALTER TABLE media ADD COLUMN kind TEXT NOT NULL DEFAULT 'video' CHECK (kind IN ('video','image'));
+
+      ALTER TABLE posts ADD COLUMN thumbnail_id TEXT REFERENCES media(id) ON DELETE SET NULL;
+      ALTER TABLE posts ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'
+        CHECK (visibility IN ('public','unlisted','private'));
+
+      -- 0..1 upload progress, adapter resume state (e.g. resumable session URI), and what was sent.
+      ALTER TABLE publish_jobs ADD COLUMN progress REAL;
+      ALTER TABLE publish_jobs ADD COLUMN checkpoint TEXT;
+      ALTER TABLE publish_jobs ADD COLUMN result_payload TEXT;
+
+      -- Pending OAuth authorizations (CSRF state + PKCE verifier).
+      CREATE TABLE oauth_states (
+        state         TEXT PRIMARY KEY,
+        platform      TEXT NOT NULL,
+        code_verifier TEXT,
+        redirect_uri  TEXT NOT NULL,
+        return_to     TEXT,
+        created_at    TEXT NOT NULL
+      );
+    `,
+  },
 ];

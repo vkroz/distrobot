@@ -11,6 +11,7 @@ import type {
   PostStatus,
   PostTarget,
   PublishJob,
+  Visibility,
 } from "@/lib/types";
 
 type Row = Record<string, unknown>;
@@ -30,6 +31,7 @@ const nul = <T>(v: T | undefined): T | null => (v === undefined ? null : v);
 
 const toMedia = (r: Row): Media => ({
   id: String(r.id),
+  kind: (r.kind as Media["kind"]) ?? "video",
   originalFilename: String(r.original_filename),
   storagePath: String(r.storage_path),
   mimeType: str(r.mime_type) ?? undefined,
@@ -47,6 +49,8 @@ const toPost = (r: Row): Post => ({
   caption: String(r.caption),
   hashtags: parse(r.hashtags, []),
   mediaId: str(r.media_id),
+  thumbnailId: str(r.thumbnail_id),
+  visibility: (r.visibility as Visibility) ?? "public",
   status: r.status as PostStatus,
   scheduledAt: str(r.scheduled_at),
   createdAt: String(r.created_at),
@@ -76,7 +80,10 @@ const toJob = (r: Row): PublishJob => ({
   attempts: Number(r.attempts),
   maxAttempts: Number(r.max_attempts),
   dryRun: Number(r.dry_run) === 1,
+  progress: r.progress === null || r.progress === undefined ? null : Number(r.progress),
+  checkpoint: parse<unknown>(r.checkpoint, null),
   resultUrl: str(r.result_url),
+  resultPayload: parse<unknown>(r.result_payload, null),
   externalId: str(r.external_id),
   error: str(r.error),
   nextRunAt: str(r.next_run_at),
@@ -113,15 +120,19 @@ function many<T>(db: DB, map: (r: Row) => T, sql: string, ...params: SqlValue[])
 // Media
 // ---------------------------------------------------------------------------
 
-export type NewMedia = Omit<Media, "id" | "createdAt" | "checksum"> & { checksum?: string | null };
+export type NewMedia = Omit<Media, "id" | "createdAt" | "checksum" | "kind"> & {
+  checksum?: string | null;
+  kind?: Media["kind"];
+};
 
 export function createMedia(db: DB, input: NewMedia): Media {
   const id = randomUUID();
   db.prepare(
-    `INSERT INTO media (id, original_filename, storage_path, mime_type, size_bytes, duration_sec, width, height, checksum, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO media (id, kind, original_filename, storage_path, mime_type, size_bytes, duration_sec, width, height, checksum, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
+    input.kind ?? "video",
     input.originalFilename,
     input.storagePath,
     nul(input.mimeType),
@@ -146,6 +157,8 @@ export interface PostInput {
   caption?: string;
   hashtags?: string[];
   mediaId?: string | null;
+  thumbnailId?: string | null;
+  visibility?: Visibility;
   scheduledAt?: string | null;
 }
 
@@ -153,22 +166,45 @@ export function createPost(db: DB, input: PostInput = {}): Post {
   const id = randomUUID();
   const ts = now();
   db.prepare(
-    `INSERT INTO posts (id, title, caption, hashtags, media_id, status, scheduled_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
-  ).run(id, input.title ?? "", input.caption ?? "", json(input.hashtags ?? []), nul(input.mediaId), nul(input.scheduledAt), ts, ts);
+    `INSERT INTO posts (id, title, caption, hashtags, media_id, thumbnail_id, visibility, status, scheduled_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
+  ).run(
+    id,
+    input.title ?? "",
+    input.caption ?? "",
+    json(input.hashtags ?? []),
+    nul(input.mediaId),
+    nul(input.thumbnailId),
+    input.visibility ?? "public",
+    nul(input.scheduledAt),
+    ts,
+    ts,
+  );
   return getPost(db, id)!;
 }
 
 export const getPost = (db: DB, id: string) => one(db, toPost, "SELECT * FROM posts WHERE id = ?", id);
-export const listPosts = (db: DB) => many(db, toPost, "SELECT * FROM posts ORDER BY created_at DESC");
+export const listPosts = (db: DB, limit = 100) =>
+  many(db, toPost, "SELECT * FROM posts ORDER BY created_at DESC LIMIT ?", limit);
 
 export function updatePost(db: DB, id: string, input: PostInput): Post {
   const existing = getPost(db, id);
   if (!existing) throw new Error(`Post ${id} not found`);
   const merged = { ...existing, ...input };
   db.prepare(
-    `UPDATE posts SET title = ?, caption = ?, hashtags = ?, media_id = ?, scheduled_at = ?, updated_at = ? WHERE id = ?`,
-  ).run(merged.title, merged.caption, json(merged.hashtags), nul(merged.mediaId), nul(merged.scheduledAt), now(), id);
+    `UPDATE posts SET title = ?, caption = ?, hashtags = ?, media_id = ?, thumbnail_id = ?, visibility = ?, scheduled_at = ?,
+       updated_at = ? WHERE id = ?`,
+  ).run(
+    merged.title,
+    merged.caption,
+    json(merged.hashtags),
+    nul(merged.mediaId),
+    nul(merged.thumbnailId),
+    merged.visibility,
+    nul(merged.scheduledAt),
+    now(),
+    id,
+  );
   return getPost(db, id)!;
 }
 
@@ -279,10 +315,21 @@ export function upsertAccount(db: DB, input: AccountInput): ConnectedAccount {
   )!;
 }
 
+export function updateAccountTokens(
+  db: DB,
+  id: string,
+  t: { accessToken: string; refreshToken: string | null; expiresAt: string | null },
+): ConnectedAccount {
+  db.prepare(
+    "UPDATE connected_accounts SET access_token = ?, refresh_token = ?, expires_at = ?, updated_at = ? WHERE id = ?",
+  ).run(t.accessToken, t.refreshToken, t.expiresAt, now(), id);
+  return getAccount(db, id)!;
+}
+
 export const getAccount = (db: DB, id: string) => one(db, toAccount, "SELECT * FROM connected_accounts WHERE id = ?", id);
 export const listAccounts = (db: DB, platform?: PlatformId) =>
   platform
-    ? many(db, toAccount, "SELECT * FROM connected_accounts WHERE platform = ? ORDER BY created_at", platform)
+    ? many(db, toAccount, "SELECT * FROM connected_accounts WHERE platform = ? ORDER BY updated_at DESC", platform)
     : many(db, toAccount, "SELECT * FROM connected_accounts ORDER BY platform, created_at");
 export const deleteAccount = (db: DB, id: string) =>
   void db.prepare("DELETE FROM connected_accounts WHERE id = ?").run(id);
@@ -296,9 +343,19 @@ export const listJobs = (db: DB, postId: string) =>
   many(db, toJob, "SELECT * FROM publish_jobs WHERE post_id = ? ORDER BY created_at", postId);
 
 /** Create one queued job per enabled target that doesn't already have an active or published job. */
-export function enqueuePublish(db: DB, postId: string, opts: { dryRun?: boolean; maxAttempts?: number; runAt?: string } = {}): PublishJob[] {
+export interface EnqueueOptions {
+  dryRun?: boolean;
+  maxAttempts?: number;
+  /** When each target's job becomes due. Defaults to the post's scheduledAt, or now. */
+  runAtFor?: (target: PostTarget, post: Post) => string;
+}
+
+export function enqueuePublish(db: DB, postId: string, opts: EnqueueOptions = {}): PublishJob[] {
   return transaction(db, () => {
     const ts = now();
+    const post = getPost(db, postId);
+    if (!post) throw new Error(`Post ${postId} not found`);
+    const runAtFor = opts.runAtFor ?? ((_t: PostTarget, p: Post) => p.scheduledAt ?? ts);
     const created: PublishJob[] = [];
     for (const t of listTargets(db, postId)) {
       if (!t.enabled) continue;
@@ -310,7 +367,7 @@ export function enqueuePublish(db: DB, postId: string, opts: { dryRun?: boolean;
       db.prepare(
         `INSERT INTO publish_jobs (id, post_id, target_id, platform, status, attempts, max_attempts, dry_run, next_run_at, created_at, updated_at)
          VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?)`,
-      ).run(id, postId, t.id, t.platform, opts.maxAttempts ?? 3, opts.dryRun ? 1 : 0, opts.runAt ?? ts, ts, ts);
+      ).run(id, postId, t.id, t.platform, opts.maxAttempts ?? 3, opts.dryRun ? 1 : 0, runAtFor(t, post), ts, ts);
       created.push(getJob(db, id)!);
     }
     syncPostStatus(db, postId);
@@ -331,8 +388,8 @@ export function claimNextJob(db: DB, at: Date = new Date()): PublishJob | null {
     if (!job) return null;
     const ts = now();
     db.prepare(
-      `UPDATE publish_jobs SET status = 'uploading', attempts = attempts + 1, started_at = ?, error = NULL, updated_at = ?
-       WHERE id = ? AND status = 'queued'`,
+      `UPDATE publish_jobs SET status = 'uploading', attempts = attempts + 1, started_at = ?, error = NULL, progress = 0,
+         updated_at = ? WHERE id = ? AND status = 'queued'`,
     ).run(ts, ts, job.id);
     return getJob(db, job.id);
   });
@@ -352,24 +409,61 @@ function setStatus(db: DB, id: string, to: JobStatus, fields: Partial<Record<str
   return getJob(db, id)!;
 }
 
-export function markJobPublished(db: DB, id: string, result: { url: string | null; externalId?: string | null }) {
+export function markJobPublished(
+  db: DB,
+  id: string,
+  result: { url: string | null; externalId?: string | null; payload?: unknown; warnings?: string[] },
+) {
   return setStatus(db, id, "published", {
     result_url: result.url,
     external_id: result.externalId ?? null,
+    result_payload: result.payload === undefined ? null : json({ ...(result.payload as object), warnings: result.warnings ?? [] }),
     error: null,
+    progress: 1,
+    checkpoint: null,
     finished_at: now(),
   });
 }
 
+export function updateJobProgress(db: DB, id: string, progress: number): void {
+  db.prepare("UPDATE publish_jobs SET progress = ?, updated_at = ? WHERE id = ? AND status = 'uploading'").run(
+    Math.max(0, Math.min(1, progress)),
+    now(),
+    id,
+  );
+}
+
+export function saveJobCheckpoint(db: DB, id: string, checkpoint: unknown): void {
+  db.prepare("UPDATE publish_jobs SET checkpoint = ?, updated_at = ? WHERE id = ?").run(
+    checkpoint === null || checkpoint === undefined ? null : json(checkpoint),
+    now(),
+    id,
+  );
+}
+
+/** Jobs left `uploading` by a crashed/restarted process go back to the queue (or fail if out of attempts). */
+export function requeueOrphanedJobs(db: DB): PublishJob[] {
+  const orphans = many(db, toJob, "SELECT * FROM publish_jobs WHERE status = 'uploading'");
+  return orphans.map((j) => markJobFailed(db, j.id, "Interrupted by server restart", { retryable: true, delayMs: 0 }));
+}
+
+export const listRecentJobs = (db: DB, limit = 200) =>
+  many(db, toJob, "SELECT * FROM publish_jobs ORDER BY created_at DESC LIMIT ?", limit);
+
 /** Record a failure; re-queues with backoff if retryable and attempts remain. */
-export function markJobFailed(db: DB, id: string, error: string, opts: { retryable?: boolean } = {}) {
+export function markJobFailed(
+  db: DB,
+  id: string,
+  error: string,
+  opts: { retryable?: boolean; delayMs?: number } = {},
+) {
   const job = getJob(db, id);
   if (!job) throw new Error(`Job ${id} not found`);
   if (opts.retryable !== false && job.attempts < job.maxAttempts) {
-    const next = new Date(Date.now() + retryDelayMs(job.attempts)).toISOString();
-    return setStatus(db, id, "queued", { error, next_run_at: next });
+    const next = new Date(Date.now() + (opts.delayMs ?? retryDelayMs(job.attempts))).toISOString();
+    return setStatus(db, id, "queued", { error, next_run_at: next, progress: null });
   }
-  return setStatus(db, id, "failed", { error, finished_at: now() });
+  return setStatus(db, id, "failed", { error, progress: null, finished_at: now() });
 }
 
 /** Manually retry a failed job: grants one more attempt. */
@@ -389,16 +483,39 @@ export function syncPostStatus(db: DB, postId: string): Post | null {
   if (!post) return null;
   const rows = db
     .prepare(
-      `SELECT status FROM publish_jobs j WHERE post_id = ? AND created_at = (
-         SELECT MAX(created_at) FROM publish_jobs WHERE target_id = j.target_id)`,
+      `SELECT status, attempts, next_run_at AS nextRunAt FROM publish_jobs j WHERE post_id = ? AND rowid = (
+         SELECT MAX(rowid) FROM publish_jobs WHERE target_id = j.target_id)`,
     )
-    .all(postId) as Array<{ status: JobStatus }>;
-  const status = derivePostStatus(
-    rows.map((r) => r.status),
-    post.status,
-  );
+    .all(postId) as Array<{ status: JobStatus; attempts: number; nextRunAt: string | null }>;
+  const status = derivePostStatus(rows, post.status);
   if (status !== post.status) {
     db.prepare("UPDATE posts SET status = ?, updated_at = ? WHERE id = ?").run(status, now(), postId);
   }
   return getPost(db, postId);
+}
+
+// ---------------------------------------------------------------------------
+// OAuth state (CSRF + PKCE), single use, 15 min TTL
+// ---------------------------------------------------------------------------
+
+const OAUTH_STATE_TTL_MS = 15 * 60_000;
+
+export function createOAuthState(
+  db: DB,
+  input: { state: string; platform: PlatformId; codeVerifier?: string | null; redirectUri: string; returnTo?: string | null },
+): void {
+  db.prepare("DELETE FROM oauth_states WHERE created_at < ?").run(new Date(Date.now() - OAUTH_STATE_TTL_MS).toISOString());
+  db.prepare(
+    "INSERT INTO oauth_states (state, platform, code_verifier, redirect_uri, return_to, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(input.state, input.platform, nul(input.codeVerifier), input.redirectUri, nul(input.returnTo), now());
+}
+
+/** Fetch and delete a state; null if unknown, expired or for another platform. */
+export function consumeOAuthState(db: DB, state: string, platform: PlatformId) {
+  const row = db.prepare("SELECT * FROM oauth_states WHERE state = ?").get(state) as Row | undefined;
+  if (!row) return null;
+  db.prepare("DELETE FROM oauth_states WHERE state = ?").run(state);
+  if (row.platform !== platform) return null;
+  if (Date.parse(String(row.created_at)) < Date.now() - OAUTH_STATE_TTL_MS) return null;
+  return { codeVerifier: str(row.code_verifier), redirectUri: String(row.redirect_uri), returnTo: str(row.return_to) };
 }

@@ -27,12 +27,24 @@ export function retryDelayMs(attempts: number): number {
   return Math.min(30_000 * 2 ** Math.max(0, attempts - 1), 30 * 60_000);
 }
 
-/** Derive the overall post status from its jobs' statuses. */
-export function derivePostStatus(jobStatuses: JobStatus[], current: PostStatus = "draft"): PostStatus {
-  if (jobStatuses.length === 0) return current === "scheduled" ? "scheduled" : "draft";
-  if (jobStatuses.some((s) => s === "queued" || s === "uploading")) return "publishing";
-  const published = jobStatuses.filter((s) => s === "published").length;
-  if (published === jobStatuses.length) return "published";
+type JobLike = JobStatus | { status: JobStatus; attempts?: number; nextRunAt?: string | null };
+
+/**
+ * Derive the overall post status from its latest job per target.
+ * Queued jobs that have never run and are due in the future count as "scheduled".
+ */
+export function derivePostStatus(jobs: JobLike[], current: PostStatus = "draft", now: Date = new Date()): PostStatus {
+  const list = jobs.map((j) => (typeof j === "string" ? { status: j } : j));
+  if (list.length === 0) return current === "scheduled" ? "scheduled" : "draft";
+  const active = list.filter((j) => j.status === "queued" || j.status === "uploading");
+  if (active.length > 0) {
+    const allScheduled = active.every(
+      (j) => j.status === "queued" && !j.attempts && j.nextRunAt && Date.parse(j.nextRunAt) > now.getTime(),
+    );
+    return allScheduled ? "scheduled" : "publishing";
+  }
+  const published = list.filter((j) => j.status === "published").length;
+  if (published === list.length) return "published";
   if (published === 0) return "failed";
   return "partial";
 }

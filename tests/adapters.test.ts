@@ -8,6 +8,7 @@ import { PLATFORM_IDS, type ConnectedAccount, type Media } from "@/lib/types";
 
 const media: Media = {
   id: "m1",
+  kind: "video",
   originalFilename: "clip.mp4",
   storagePath: "m1.mp4",
   mimeType: "video/mp4",
@@ -24,6 +25,7 @@ const req = (over: Partial<PublishRequest> = {}): PublishRequest => ({
   content: { title: "Title", caption: "Caption", hashtags: ["tag"] },
   media,
   mediaPath: "/tmp/m1.mp4",
+  visibility: "public",
   settings: {},
   ...over,
 });
@@ -56,9 +58,16 @@ describe("registry", () => {
 
 describe("dry run", () => {
   it.each(PLATFORM_IDS)("%s dry-run publish returns a simulated result without network", async (platform) => {
-    const res = await getAdapter(platform).publish(req(), { account: null, dryRun: true });
+    const progress: number[] = [];
+    const res = await getAdapter(platform).publish(req(), {
+      account: null,
+      dryRun: true,
+      simulatedDelayMs: 0,
+      onProgress: (p) => progress.push(p.fraction ?? 0),
+    });
     expect(res.dryRun).toBe(true);
-    expect(res.url).toBe(`https://dry-run.invalid/${platform}/job-1`);
+    expect(res.url).toBe(`/dry-run/job-1`);
+    expect(progress.at(-1)).toBe(1);
     if (platform === "vimeo") expect(res.payload.tags).toEqual(["tag"]);
     else expect(res.payload.caption).toContain("#tag");
   });
@@ -71,13 +80,10 @@ describe("dry run", () => {
     await expect(p).rejects.toMatchObject({ code: "validation_failed", retryable: false });
   });
 
-  it("real publish without an account fails; with account reports not implemented", async () => {
+  it("real publish without an account fails", async () => {
     await expect(getAdapter("youtube").publish(req(), { account: null, dryRun: false })).rejects.toMatchObject({
       code: "no_account",
     });
-    await expect(
-      getAdapter("youtube").publish(req(), { account: account({ platform: "youtube" }), dryRun: false }),
-    ).rejects.toMatchObject({ code: "not_implemented" });
   });
 });
 
@@ -173,6 +179,8 @@ describe("OAuth", () => {
   });
 });
 
+const RUN = { uploadDir: "/tmp/u", simulatedDelayMs: 0, dryRunMode: "auto" as const };
+
 describe("job runner", () => {
   let db: ReturnType<typeof openDatabase>;
   beforeEach(() => {
@@ -190,18 +198,18 @@ describe("job runner", () => {
   it("publishes dry-run jobs end to end", async () => {
     const post = postWithTargets();
     enqueuePublish(db, post.id, { dryRun: true });
-    const a = await runNextJob(db, { uploadDir: "/tmp/uploads" });
-    const b = await runNextJob(db, { uploadDir: "/tmp/uploads" });
+    const a = await runNextJob(db, RUN);
+    const b = await runNextJob(db, RUN);
     expect(a!.status).toBe("published");
-    expect(b!.resultUrl).toMatch(/^https:\/\/dry-run\.invalid\//);
-    expect(await runNextJob(db)).toBeNull();
+    expect(b!.resultUrl).toBe(`/dry-run/${b!.id}`);
+    expect(await runNextJob(db, RUN)).toBeNull();
     expect(getPost(db, post.id)!.status).toBe("published");
   });
 
   it("fails validation errors permanently and retries transient errors", async () => {
     const post = postWithTargets("y".repeat(500)); // too long for X only
     enqueuePublish(db, post.id, { dryRun: true });
-    const results = [await runNextJob(db, { uploadDir: "/tmp/u" }), await runNextJob(db, { uploadDir: "/tmp/u" })];
+    const results = [await runNextJob(db, RUN), await runNextJob(db, RUN)];
     const x = results.find((j) => j!.platform === "x")!;
     expect(x.status).toBe("failed");
     expect(x.error).toMatch(/280/);
@@ -218,7 +226,7 @@ describe("job runner", () => {
     const post2 = postWithTargets();
     upsertTarget(db, post2.id, "tiktok", { enabled: false });
     const [job] = enqueuePublish(db, post2.id);
-    const after = await runNextJob(db, { uploadDir: "/tmp/u" });
+    const after = await runNextJob(db, RUN);
     expect(after!.id).toBe(job.id);
     expect(getJob(db, job.id)!.status).toBe("queued");
     expect(getJob(db, job.id)!.error).toBe("ECONNRESET");

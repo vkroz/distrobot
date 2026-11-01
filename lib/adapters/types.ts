@@ -1,15 +1,22 @@
 import type { PlatformRuleOverrides, PlatformRules } from "@/lib/platforms/rules";
 import type { ValidationResult } from "@/lib/platforms/validate";
-import type { ConnectedAccount, Media, MediaInfo, PlatformId, TargetContent } from "@/lib/types";
+import type { ConnectedAccount, Media, MediaInfo, PlatformId, TargetContent, Visibility } from "@/lib/types";
 
 export interface PublishRequest {
   jobId: string;
   content: TargetContent;
   media: Media;
-  /** Absolute path to the media file on local disk. */
+  /** Absolute path to the video file on local disk. */
   mediaPath: string;
-  /** Platform-specific target settings (privacy, category, ...). */
+  /** Optional custom thumbnail (image) on local disk. */
+  thumbnail?: { path: string; mimeType: string; sizeBytes: number } | null;
+  visibility: Visibility;
+  /** ISO time the post should go live. Only set for adapters with `capabilities.nativeScheduling`. */
+  scheduledAt?: string | null;
+  /** Platform-specific target settings (privacy, category, page id, ...). */
   settings: Record<string, unknown>;
+  /** Resume state saved by a previous attempt via `ctx.saveCheckpoint`. */
+  checkpoint?: unknown;
 }
 
 export interface PublishProgress {
@@ -22,8 +29,12 @@ export interface PublishContext {
   account: ConnectedAccount | null;
   /** Validate and simulate only — never calls the platform API. */
   dryRun: boolean;
+  /** Simulated latency for dry-run publishes (ms). */
+  simulatedDelayMs?: number;
   signal?: AbortSignal;
   onProgress?: (p: PublishProgress) => void;
+  /** Persist resume state (e.g. an upload session URL) so a retry can continue. */
+  saveCheckpoint?: (data: unknown) => void;
   fetch?: typeof fetch;
 }
 
@@ -32,8 +43,17 @@ export interface PublishResult {
   externalId: string | null;
   dryRun: boolean;
   /** What was (or would have been) sent. */
-  payload: ValidationResult["effective"];
+  payload: ValidationResult["effective"] & Record<string, unknown>;
   warnings: string[];
+}
+
+/** What a concrete adapter's real upload returns (BaseAdapter adds payload/warnings/dryRun). */
+export interface DoPublishResult {
+  url: string | null;
+  externalId: string | null;
+  warnings?: string[];
+  /** Extra platform-specific fields to record (e.g. YouTube publishAt). */
+  extra?: Record<string, unknown>;
 }
 
 export interface AuthUrlParams {
@@ -53,10 +73,23 @@ export interface CallbackParams {
 /** Credentials + identity returned by OAuth; persisted as a ConnectedAccount. */
 export type AccountCredentials = Omit<ConnectedAccount, "id" | "createdAt" | "updatedAt">;
 
+export type RefreshedTokens = Pick<ConnectedAccount, "accessToken" | "refreshToken" | "expiresAt">;
+
+export interface AdapterCapabilities {
+  pkce: boolean;
+  refreshTokens: boolean;
+  /** Has a real (non-dry-run) publish implementation. */
+  publish: boolean;
+  /** Platform schedules natively (upload now, goes live at `scheduledAt`). */
+  nativeScheduling: boolean;
+  /** Supports setting a custom thumbnail. */
+  thumbnail: boolean;
+}
+
 export interface PlatformAdapter {
   readonly platform: PlatformId;
   readonly displayName: string;
-  readonly capabilities: { pkce: boolean; refreshTokens: boolean; publish: boolean };
+  readonly capabilities: AdapterCapabilities;
 
   /** Whether OAuth client credentials are present in the environment. */
   isConfigured(): boolean;
@@ -66,6 +99,7 @@ export interface PlatformAdapter {
   publish(req: PublishRequest, ctx: PublishContext): Promise<PublishResult>;
   getAuthUrl(params: AuthUrlParams): string;
   handleCallback(params: CallbackParams): Promise<AccountCredentials>;
+  refreshAccessToken(account: ConnectedAccount, fetchImpl?: typeof fetch): Promise<RefreshedTokens>;
 }
 
 export type AdapterErrorCode =
@@ -75,7 +109,9 @@ export type AdapterErrorCode =
   | "validation_failed"
   | "auth_failed"
   | "rate_limited"
-  | "upstream_error";
+  | "quota_exceeded"
+  | "upstream_error"
+  | "aborted";
 
 export class AdapterError extends Error {
   constructor(
