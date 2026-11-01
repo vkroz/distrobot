@@ -50,7 +50,7 @@ function resolveAccount(db: DB, target: PostTarget): ConnectedAccount | null {
   return listAccounts(db, target.platform)[0] ?? null;
 }
 
-async function refreshAccount(
+export async function refreshAccount(
   db: DB,
   adapter: PlatformAdapter,
   account: ConnectedAccount,
@@ -60,7 +60,7 @@ async function refreshAccount(
   return updateAccountTokens(db, account.id, tokens);
 }
 
-function needsRefresh(account: ConnectedAccount): boolean {
+export function needsRefresh(account: ConnectedAccount): boolean {
   return !!account.refreshToken && !!account.expiresAt && Date.parse(account.expiresAt) - Date.now() < REFRESH_MARGIN_MS;
 }
 
@@ -146,4 +146,28 @@ export async function executeJob(db: DB, job: PublishJob, opts: RunnerOptions = 
 export async function runNextJob(db: DB, opts: RunnerOptions = {}): Promise<PublishJob | null> {
   const job = claimNextJob(db);
   return job ? executeJob(db, job, opts) : null;
+}
+
+/**
+ * Run an API call with a connected account outside the job runner (e.g. compose-time lookups):
+ * refreshes a token that is about to expire, and on `auth_failed` refreshes once and retries.
+ */
+export async function withFreshAccount<T>(
+  db: DB,
+  adapter: PlatformAdapter,
+  account: ConnectedAccount,
+  call: (account: ConnectedAccount) => Promise<T>,
+  fetchImpl?: typeof fetch,
+): Promise<T> {
+  let current = account;
+  if (needsRefresh(current)) current = await refreshAccount(db, adapter, current, fetchImpl);
+  try {
+    return await call(current);
+  } catch (err) {
+    if (err instanceof AdapterError && err.code === "auth_failed" && current.refreshToken) {
+      current = await refreshAccount(db, adapter, current, fetchImpl);
+      return call(current);
+    }
+    throw err;
+  }
 }

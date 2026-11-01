@@ -1,5 +1,13 @@
 import fs from "node:fs/promises";
-import type { ConnectedAccount, Visibility } from "@/lib/types";
+import type { ConnectedAccount } from "@/lib/types";
+import {
+  TIKTOK_PRIVACY_LABELS,
+  normalizeCreatorInfo,
+  parseTikTokSettings,
+  tiktokPostInfo,
+  validateTikTokSettings,
+  type TikTokCreatorInfo,
+} from "@/lib/platforms/tiktok";
 import type { PlatformRuleOverrides } from "@/lib/platforms/rules";
 import type { ValidationResult } from "@/lib/platforms/validate";
 import { BaseAdapter, type Profile } from "../base";
@@ -24,14 +32,6 @@ interface TikTokEnvelope<T> {
   error?: { code: string; message?: string; log_id?: string };
 }
 
-interface CreatorInfo {
-  creator_username?: string;
-  privacy_level_options?: string[];
-  comment_disabled?: boolean;
-  duet_disabled?: boolean;
-  stitch_disabled?: boolean;
-  max_video_post_duration_sec?: number;
-}
 
 interface TikTokCheckpoint {
   publishId: string;
@@ -39,11 +39,6 @@ interface TikTokCheckpoint {
   username?: string;
 }
 
-const PRIVACY: Record<Visibility, string> = {
-  public: "PUBLIC_TO_EVERYONE",
-  unlisted: "MUTUAL_FOLLOW_FRIENDS",
-  private: "SELF_ONLY",
-};
 
 /** Split `size` into TikTok-compliant chunks: equal chunks, the last one absorbing the remainder. */
 export function tiktokChunks(size: number, chunkSize = 10 * MB, minChunkSize = 5 * MB) {
@@ -54,11 +49,14 @@ export function tiktokChunks(size: number, chunkSize = 10 * MB, minChunkSize = 5
 
 /**
  * TikTok Content Posting API — Direct Post (FILE_UPLOAD).
- *   1. POST /v2/post/publish/creator_info/query/  → privacy options, max duration
+ *   1. POST /v2/post/publish/creator_info/query/  → privacy options, interaction limits, max duration
+ *      (the same call backs the compose screen's creator info via `queryCreatorInfo`)
  *   2. POST /v2/post/publish/video/init/           → publish_id, upload_url
  *   3. PUT upload_url (Content-Range per chunk)
  *   4. POST /v2/post/publish/status/fetch/         → poll until PUBLISH_COMPLETE
  * Docs: https://developers.tiktok.com/doc/content-posting-api-reference-direct-post
+ * Privacy level, interaction toggles and commercial disclosure come from the user's explicit
+ * choices in `settings` (see lib/platforms/tiktok.ts) — TikTok requires no defaults.
  * Shapes follow the public docs but are unverified against the live API.
  */
 export class TikTokAdapter extends BaseAdapter {
@@ -116,6 +114,12 @@ export class TikTokAdapter extends BaseAdapter {
     return res.data;
   }
 
+  /** creator_info/query for the compose screen (and pre-publish checks). */
+  async queryCreatorInfo(account: ConnectedAccount, fetchImpl: typeof fetch = fetch, signal?: AbortSignal): Promise<TikTokCreatorInfo> {
+    const raw = await this.call<Record<string, unknown>>(fetchImpl, "/v2/post/publish/creator_info/query/", account.accessToken, {}, signal);
+    return normalizeCreatorInfo(raw ?? {});
+  }
+
   protected async doPublish(
     req: PublishRequest,
     ctx: PublishContext & { account: ConnectedAccount },
@@ -127,39 +131,27 @@ export class TikTokAdapter extends BaseAdapter {
     let cp = (req.checkpoint as TikTokCheckpoint | null | undefined) ?? null;
 
     if (!cp?.uploaded) {
-      const info = await this.call<CreatorInfo>(f, "/v2/post/publish/creator_info/query/", token, {}, ctx.signal);
-      const max = info.max_video_post_duration_sec;
-      if (max && req.media.durationSec && req.media.durationSec > max) {
-        throw new AdapterError("validation_failed", `Video is longer than this creator's TikTok limit of ${max}s.`);
-      }
-      const options = info.privacy_level_options ?? [];
-      let privacy = PRIVACY[req.visibility];
-      if (options.length && !options.includes(privacy)) {
-        const fallback = options.includes("SELF_ONLY") ? "SELF_ONLY" : options[0];
-        warnings.push(`TikTok does not allow ${privacy} for this account; posted as ${fallback}.`);
-        privacy = fallback;
-      }
+      const creator = await this.queryCreatorInfo(ctx.account, f, ctx.signal);
+      // Re-check the user's choices against the creator's current constraints (they can change).
+      const issues = validateTikTokSettings(req.settings, creator, req.media.durationSec);
+      if (issues.length) throw new AdapterError("validation_failed", issues.map((i) => i.message).join(" "));
+      const settings = parseTikTokSettings(req.settings);
+      const postInfo = tiktokPostInfo(settings, creator);
 
       const size = (await fs.stat(req.mediaPath)).size;
       const { chunkSize, count } = tiktokChunks(size, this.opts.chunkSize, this.opts.minChunkSize);
-      const s = req.settings;
       const init = await this.call<{ publish_id: string; upload_url: string }>(
         f,
         "/v2/post/publish/video/init/",
         token,
         {
-          post_info: {
-            title: validation.effective.caption,
-            privacy_level: privacy,
-            disable_comment: !!info.comment_disabled || s.disableComment === true,
-            disable_duet: !!info.duet_disabled || s.disableDuet === true,
-            disable_stitch: !!info.stitch_disabled || s.disableStitch === true,
-          },
+          post_info: { title: validation.effective.caption, ...postInfo },
           source_info: { source: "FILE_UPLOAD", video_size: size, chunk_size: chunkSize, total_chunk_count: count },
         },
         ctx.signal,
       );
-      cp = { publishId: init.publish_id, uploaded: false, username: info.creator_username };
+      cp = { publishId: init.publish_id, uploaded: false, username: creator.username ?? undefined };
+      if (settings.privacyLevel === "SELF_ONLY") warnings.push(`Posted with TikTok visibility "${TIKTOK_PRIVACY_LABELS.SELF_ONLY}".`);
       ctx.saveCheckpoint?.(cp);
 
       for (let i = 0; i < count; i++) {

@@ -7,5 +7,7 @@ export async function GET() {
   const db = getDb();
   const row = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number };
   const worker = getWorker();
-  return Response.json({ ok: true, schemaVersion: row.version, worker: { running: worker.running, active: worker.activeJobIds } });
+  // Public endpoint: expose liveness only (no job ids / lease owner).
+  const { running, holdsLease, active } = worker.status();
+  return Response.json({ ok: true, schemaVersion: row.version, worker: { running, holdsLease, busy: active.length > 0 } });
 }

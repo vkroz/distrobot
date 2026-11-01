@@ -8,13 +8,16 @@ import {
   type TextRule,
 } from "./rules";
 import { countText, extractHashtags, normalizeHashtags, removeHashtags, truncateText } from "./text";
+import { validateTikTokSettings, type TikTokCreatorInfo, type TikTokSettingsIssue } from "./tiktok";
 
 export type Severity = "error" | "warning" | "info";
-export type IssueField = "title" | "caption" | "hashtags" | "media";
+export type IssueField = "title" | "caption" | "hashtags" | "media" | "settings";
 
 export type IssueCode =
   | "title_required"
   | "title_too_long"
+  | "title_long"
+  | "tag_too_long"
   | "title_ignored"
   | "forbidden_chars"
   | "caption_too_long"
@@ -30,7 +33,8 @@ export type IssueCode =
   | "orientation_mismatch"
   | "resolution_too_low"
   | "classified_short_form"
-  | "media_metadata_missing";
+  | "media_metadata_missing"
+  | TikTokSettingsIssue["code"];
 
 export interface ValidationIssue {
   severity: Severity;
@@ -64,6 +68,13 @@ export interface ValidationInput {
   /** Omit to validate text only (e.g. while drafting before upload). */
   media?: MediaInfo;
   overrides?: PlatformRuleOverrides;
+  /**
+   * Per-target platform settings. When provided, platform-specific requirements are checked
+   * (e.g. TikTok privacy level / commercial disclosure). Omit to skip settings checks.
+   */
+  settings?: Record<string, unknown>;
+  /** TikTok creator constraints from creator_info, when known. */
+  tiktokCreator?: TikTokCreatorInfo | null;
 }
 
 export interface ValidationResult {
@@ -242,12 +253,54 @@ function validateTitle(c: Collector, rules: PlatformRules, content: TargetConten
       automatic: true,
       description: `Shorten ${rule.label.toLowerCase()} to ${rule.maxLength} characters`,
     });
+  } else if (rule.recommendedMaxLength && len > rule.recommendedMaxLength) {
+    // Soft limit: the platform documents no hard cap, so warn instead of blocking.
+    c.add({
+      severity: "warning",
+      code: "title_long",
+      field: "title",
+      message: `${rule.label} is ${len} characters; ${rule.recommendedMaxLength} or fewer is recommended on ${rules.displayName}.`,
+      limit: rule.recommendedMaxLength,
+      actual: len,
+    });
+    c.suggest({
+      type: "truncate_title",
+      title: truncateText(cleanTitle, rule.recommendedMaxLength, mode),
+      automatic: true,
+      description: `Shorten ${rule.label.toLowerCase()} to ${rule.recommendedMaxLength} characters`,
+    });
   }
 }
 
 /** Returns content after any hashtag trimming so caption truncation builds on it. */
-function validateHashtags(c: Collector, rules: PlatformRules, content: TargetContent): TargetContent {
-  const { max, recommendedMax } = rules.hashtags;
+function validateHashtags(c: Collector, rules: PlatformRules, input: TargetContent): TargetContent {
+  const { max, recommendedMax, maxTagLength } = rules.hashtags;
+  let content = input;
+  if (maxTagLength !== undefined) {
+    const tooLong = allHashtags(content).filter((t) => [...t].length > maxTagLength);
+    if (tooLong.length) {
+      const drop = new Set(tooLong.map((t) => t.toLowerCase()));
+      content = {
+        ...content,
+        caption: removeHashtags(content.caption, tooLong),
+        hashtags: content.hashtags.filter((t) => !drop.has(t.toLowerCase())),
+      };
+      c.add({
+        severity: "error",
+        code: "tag_too_long",
+        field: "hashtags",
+        message: `${rules.displayName} tags can be at most ${maxTagLength} characters: ${tooLong.map((t) => `#${t}`).join(", ")}.`,
+        limit: maxTagLength,
+      });
+      c.suggest({
+        type: "trim_hashtags",
+        caption: content.caption,
+        hashtags: content.hashtags,
+        automatic: true,
+        description: `Remove ${tooLong.length} tag${tooLong.length > 1 ? "s" : ""} longer than ${maxTagLength} characters`,
+      });
+    }
+  }
   const tags = allHashtags(content);
   if (max !== undefined && tags.length > max) {
     const dropped = tags.slice(max);
@@ -517,6 +570,11 @@ export function validateForPlatform(input: ValidationInput): ValidationResult {
   const afterHashtags = validateHashtags(c, rules, content);
   validateCaption(c, rules, content, afterHashtags);
   const media = input.media ? validateMedia(c, rules, input.media) : { orientation: null, shortForm: false };
+  if (input.platform === "tiktok" && input.settings !== undefined) {
+    for (const issue of validateTikTokSettings(input.settings, input.tiktokCreator, input.media?.durationSec)) {
+      c.add({ severity: "error", code: issue.code, field: "settings", message: issue.message });
+    }
+  }
 
   const errors = c.issues.filter((i) => i.severity === "error");
   return {

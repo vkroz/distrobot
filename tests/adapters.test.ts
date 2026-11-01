@@ -9,6 +9,7 @@ import { PLATFORM_IDS, type ConnectedAccount, type Media } from "@/lib/types";
 const media: Media = {
   id: "m1",
   kind: "video",
+  metadataSource: null,
   originalFilename: "clip.mp4",
   storagePath: "m1.mp4",
   mimeType: "video/mp4",
@@ -26,7 +27,7 @@ const req = (over: Partial<PublishRequest> = {}): PublishRequest => ({
   media,
   mediaPath: "/tmp/m1.mp4",
   visibility: "public",
-  settings: {},
+  settings: { privacyLevel: "PUBLIC_TO_EVERYONE" }, // TikTok requires an explicit choice
   ...over,
 });
 
@@ -190,7 +191,7 @@ describe("job runner", () => {
   function postWithTargets(caption = "Hello") {
     const m = createMedia(db, { originalFilename: "a.mp4", storagePath: "a.mp4", mimeType: "video/mp4", sizeBytes: 5_000_000, durationSec: 30, width: 1080, height: 1920 });
     const post = createPost(db, { title: "T", caption, mediaId: m.id });
-    upsertTarget(db, post.id, "tiktok");
+    upsertTarget(db, post.id, "tiktok", { settings: { privacyLevel: "PUBLIC_TO_EVERYONE" } });
     upsertTarget(db, post.id, "x");
     return post;
   }

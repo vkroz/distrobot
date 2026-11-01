@@ -25,6 +25,7 @@ afterEach(() => vi.useRealTimers());
 const media: Media = {
   id: "m",
   kind: "video",
+  metadataSource: null,
   originalFilename: "v.mp4",
   storagePath: "v.mp4",
   mimeType: "video/mp4",

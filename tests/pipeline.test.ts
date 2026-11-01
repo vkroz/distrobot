@@ -16,6 +16,9 @@ import { PublishWorker, type WorkerOptions } from "@/lib/jobs/worker";
 import { ComposeError, composePost, getPostSummary, parseComposeInput, type ComposeInput } from "@/lib/services/posts";
 import type { PlatformId, PublishJob } from "@/lib/types";
 
+/** TikTok requires an explicit privacy choice (no default). */
+const TIKTOK_OK = { privacyLevel: "PUBLIC_TO_EVERYONE" };
+
 let db: DB;
 let mediaId: string;
 
@@ -38,7 +41,7 @@ const input = (over: Partial<ComposeInput> = {}): ComposeInput => ({
   hashtags: ["travel"],
   mediaId,
   visibility: "public",
-  targets: [{ platform: "youtube" }, { platform: "tiktok" }, { platform: "x" }],
+  targets: [{ platform: "youtube" }, { platform: "tiktok", settings: TIKTOK_OK }, { platform: "x" }],
   action: "publish",
   ...over,
 });
@@ -164,7 +167,7 @@ describe("worker (dry-run)", () => {
       active--;
       return { url: "u", externalId: req.jobId, dryRun: true, payload: { title: null, caption: "", tags: [] }, warnings: [] };
     };
-    composePost(db, input({ targets: ["youtube", "tiktok", "x", "facebook", "linkedin"].map((p) => ({ platform: p as PlatformId })) }));
+    composePost(db, input({ targets: ["youtube", "tiktok", "x", "facebook", "linkedin"].map((p) => ({ platform: p as PlatformId, settings: TIKTOK_OK })) }));
     const adapters = Object.fromEntries(
       (["youtube", "tiktok", "x", "facebook", "linkedin"] as PlatformId[]).map((p) => [p, fakeAdapter(p, { publish: slow })]),
     );
@@ -179,7 +182,7 @@ describe("retries", () => {
     const publish = vi.fn<PublishFn>(async () => {
       throw new AdapterError("upstream_error", "503 backend error", true);
     });
-    const { post } = composePost(db, input({ targets: [{ platform: "tiktok" }] }));
+    const { post } = composePost(db, input({ targets: [{ platform: "tiktok", settings: TIKTOK_OK }] }));
     const worker = workerWith({ tiktok: fakeAdapter("tiktok", { publish }) });
 
     let [job] = await worker.runDue();
@@ -206,7 +209,7 @@ describe("retries", () => {
       if (fail) throw new AdapterError("upstream_error", "400 invalid video", false);
       return { url: "https://x.com/me/status/1", externalId: "1", dryRun: false, payload: { title: null, caption: "", tags: [] }, warnings: [] };
     });
-    const { post } = composePost(db, input({ targets: [{ platform: "x" }, { platform: "tiktok" }] }));
+    const { post } = composePost(db, input({ targets: [{ platform: "x" }, { platform: "tiktok", settings: TIKTOK_OK }] }));
     const worker = workerWith({ x: fakeAdapter("x", { publish }) });
 
     await worker.runDue();
@@ -251,7 +254,7 @@ describe("retries", () => {
     vi.spyOn(worker, "kick").mockReturnValue([]);
     worker.start();
     worker.stop();
-    expect(getJob(db, job.id)).toMatchObject({ status: "queued", error: "Interrupted by server restart" });
+    expect(getJob(db, job.id)).toMatchObject({ status: "queued", error: expect.stringMatching(/server restart.*re-queued/) });
   });
 });
 

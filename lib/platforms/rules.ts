@@ -9,7 +9,7 @@ import type { PlatformId } from "@/lib/types";
  * re-checked against the linked docs before relying on it. At runtime, adapters may tighten
  * these limits per account (see `PlatformRuleOverrides`).
  */
-export const LAST_REVIEWED = "2026-10";
+export const LAST_REVIEWED = "2026-11";
 
 export const KB = 1024;
 export const MB = 1024 * KB;
@@ -33,6 +33,8 @@ export interface TextRule {
 }
 
 export interface HashtagRule {
+  /** Max characters per tag (tag-list platforms). */
+  maxTagLength?: number;
   /** "inline": appended to the caption text. "tags": sent as a separate tag list. */
   placement: "inline" | "tags";
   /** Hard limit: exceeding is an error (post rejected or tags ignored). */
@@ -111,6 +113,8 @@ export const PLATFORM_RULES: Record<PlatformId, PlatformRules> = {
     displayName: "TikTok",
     docsUrl: "https://developers.tiktok.com/doc/content-posting-api-reference-direct-post",
     title: { supported: false, label: "Title" },
+    // post_info.title: "The maximum length is 2200 in UTF-16 runes."
+    // (https://developers.tiktok.com/doc/content-posting-api-reference-direct-post)
     caption: { supported: true, maxLength: 2200, countMode: "utf16", label: "Caption" },
     hashtags: { placement: "inline", recommendedMax: 5 },
     video: {
@@ -157,6 +161,7 @@ export const PLATFORM_RULES: Record<PlatformId, PlatformRules> = {
     displayName: "X",
     docsUrl: "https://docs.x.com/x-api/media/upload-media",
     title: { supported: false, label: "Title" },
+    // 280 weighted chars (URLs = 23, CJK/emoji = 2): https://docs.x.com/fundamentals/counting-characters
     caption: { supported: true, maxLength: 280, countMode: "x-weighted", label: "Post text" },
     hashtags: { placement: "inline", recommendedMax: 2 },
     video: {
@@ -180,7 +185,12 @@ export const PLATFORM_RULES: Record<PlatformId, PlatformRules> = {
     platform: "facebook",
     displayName: "Facebook",
     docsUrl: "https://developers.facebook.com/docs/video-api/guides/publishing",
-    title: { supported: true, maxLength: 255, label: "Title" },
+    // Graph API documents NO length limit for video `title` or `description`
+    // (https://developers.facebook.com/docs/graph-api/reference/page/videos/,
+    //  https://developers.facebook.com/docs/graph-api/reference/video/). 100 for the title is the
+    // convention used by third-party tools → soft warning only; the API's own error is authoritative.
+    title: { supported: true, recommendedMaxLength: 100, label: "Title" },
+    // 63,206 is widely cited for Facebook post text but is NOT stated in Meta's docs (community-sourced).
     caption: { supported: true, maxLength: 63206, recommendedMaxLength: 500, countMode: "codepoints", label: "Description" },
     hashtags: { placement: "inline", recommendedMax: 3 },
     video: {
@@ -195,7 +205,7 @@ export const PLATFORM_RULES: Record<PlatformId, PlatformRules> = {
     },
     notes: [
       "Publishes to a Facebook Page (personal profiles are not supported by the API).",
-      "Title max length is approximate; Graph API does not document it precisely.",
+      "Video title/description limits are not documented by Meta: the 100-char title is a soft guideline and the 63,206-char description cap is community-sourced.",
       "Reels use a separate endpoint with 3–90s duration and 9:16 only (not modeled yet).",
     ],
   },
@@ -203,14 +213,22 @@ export const PLATFORM_RULES: Record<PlatformId, PlatformRules> = {
     platform: "linkedin",
     displayName: "LinkedIn",
     docsUrl: "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/videos-api",
-    title: { supported: true, maxLength: 200, label: "Video title" },
+    // Posts API `content.media.title`: no documented limit
+    // (https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/post-api-schema).
+    // 200 is an app-chosen soft cap; LinkedIn answers FIELD_LENGTH_TOO_LONG if a field is too long.
+    title: { supported: true, recommendedMaxLength: 200, label: "Video title" },
+    // 3,000: "The character limit for a post is 3000 characters." (https://www.linkedin.com/help/linkedin/answer/86780)
+    // and "The maximum length of the text of a UGC Post is 3,000 characters."
+    // (https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/ugc-post-api)
     caption: { supported: true, maxLength: 3000, recommendedMaxLength: 210, countMode: "codepoints", label: "Post text" },
     hashtags: { placement: "inline", recommendedMax: 5 },
     video: {
       minDurationSec: 3,
       maxDurationSec: 30 * 60,
+      // Videos API: 3 s – 30 min, 75 KB – 500 MB, MP4
+      // (https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/videos-api)
       minFileSizeBytes: 75 * KB,
-      maxFileSizeBytes: 5 * GB,
+      maxFileSizeBytes: 500 * MB,
       mimeTypes: [MP4],
       preferredOrientation: null,
       recommendedAspectRatios: ["16:9", "1:1", "9:16"],
@@ -219,16 +237,22 @@ export const PLATFORM_RULES: Record<PlatformId, PlatformRules> = {
     },
     notes: [
       "Post text is collapsed after ~210 characters.",
-      "Video title max length is approximate.",
+      "Video title limit is not documented by LinkedIn; 200 chars is a soft app guideline.",
     ],
   },
   vimeo: {
     platform: "vimeo",
     displayName: "Vimeo",
     docsUrl: "https://developer.vimeo.com/api/upload/videos",
+    // 128: shown as the title field's character counter ("8/128") in Vimeo's Help Center
+    // (https://help.vimeo.com/hc/en-us/articles/12426476611857); not stated in the API spec.
     title: { supported: true, required: true, maxLength: 128, label: "Title" },
-    caption: { supported: true, maxLength: 5000, countMode: "codepoints", label: "Description" },
-    hashtags: { placement: "tags", max: 20 },
+    // Description: no documented limit (API spec https://github.com/vimeo/openapi has no maxLength) → not enforced.
+    caption: { supported: true, countMode: "codepoints", label: "Description" },
+    // "You can use up to 20 tags for each video." (https://help.vimeo.com/hc/en-us/articles/12426157049105)
+    // and the API returns 403 "The total number of tags can't exceed 20." Per-tag 32 chars:
+    // "Individual tags may not exceed 32 characters." (https://help.vimeo.com/hc/en-us/articles/35291502879889)
+    hashtags: { placement: "tags", max: 20, maxTagLength: 32 },
     video: {
       mimeTypes: [MP4, MOV, WEBM, "video/x-msvideo", "video/x-ms-wmv", "video/x-flv", "video/mpeg"],
       preferredOrientation: "horizontal",
@@ -237,7 +261,7 @@ export const PLATFORM_RULES: Record<PlatformId, PlatformRules> = {
     notes: [
       "File size and weekly/total storage limits depend on the account plan; adapters should override from /me quota.",
       "Vimeo uses tags rather than inline hashtags; hashtags are mapped to tags.",
-      "Title/description/tag-count limits are approximate.",
+      "Tag limits (20 tags, 32 chars each) are documented; the 128-char title comes from the Help Center UI; description length is undocumented and not enforced.",
     ],
   },
 };

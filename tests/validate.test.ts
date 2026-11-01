@@ -273,3 +273,32 @@ describe("overrides and resolution", () => {
     ]);
   });
 });
+
+describe("documented vs soft limits", () => {
+  it("undocumented title limits warn (with a shortening suggestion) instead of blocking", () => {
+    const r = validateForPlatform({ platform: "facebook", content: content({ title: "word ".repeat(30).trim() }) });
+    expect(r.ok).toBe(true);
+    expect(r.warnings.map((w) => w.code)).toContain("title_long");
+    const fixed = applyTextAdaptations(content({ title: "word ".repeat(30).trim() }), r.adaptations);
+    expect(countText(fixed.title)).toBeLessThanOrEqual(100);
+  });
+
+  it("Vimeo: tags over 32 characters are rejected and can be dropped automatically", () => {
+    const long = "a".repeat(33);
+    const c = content({ hashtags: ["ok", long] });
+    const r = validateForPlatform({ platform: "vimeo", content: c });
+    expect(r.errors.map((e) => e.code)).toEqual(["tag_too_long"]);
+    const fixed = applyTextAdaptations(c, r.adaptations);
+    expect(fixed.hashtags).toEqual(["ok"]);
+    expect(validateForPlatform({ platform: "vimeo", content: fixed }).ok).toBe(true);
+  });
+
+  it("Vimeo descriptions have no enforced length", () => {
+    expect(validateForPlatform({ platform: "vimeo", content: content({ caption: "x".repeat(20_000) }) }).ok).toBe(true);
+  });
+
+  it("LinkedIn videos over 500 MB are rejected", () => {
+    const r = validateForPlatform({ platform: "linkedin", content: content(), media: { ...HORIZONTAL, sizeBytes: 600 * MB } });
+    expect(r.errors.map((e) => e.code)).toContain("file_too_large");
+  });
+});
