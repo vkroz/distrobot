@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PLATFORM_RULES } from "@/lib/platforms/rules";
+import type { ValidationResult } from "@/lib/platforms/validate";
 import type { PostSummary, TargetSummary } from "@/lib/services/posts";
 import type { JobStatus, PostStatus } from "@/lib/types";
-import { Badge, Card, PlatformIcon, btn, cx, formatDateTime, formatDuration, relativeTime, type Tone } from "../ui";
+import { Badge, Card, PlatformIcon, btn, cx, formatDateTime, formatDuration, inputCls, relativeTime, type Tone } from "../ui";
 import { MonthCalendar, UpcomingList } from "./schedule";
 
 const POST_TONE: Record<PostStatus, Tone> = {
@@ -114,32 +115,165 @@ function TargetRow({ target, onRetry, retrying }: { target: TargetSummary; onRet
   );
 }
 
+/** `YYYY-MM-DDTHH:mm` in local time, for datetime-local inputs. */
+function toLocalInput(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+export const isDraft = (p: PostSummary) => p.status === "draft" && p.targets.every((t) => !t.job);
+
+interface ActionError {
+  message: string;
+  validation?: ValidationResult[];
+}
+
+function PostActions({ post, onChanged }: { post: PostSummary; onChanged: (notice: string) => void }) {
+  const draft = isDraft(post);
+  const [busy, setBusy] = useState<null | "publish" | "schedule" | "delete">(null);
+  const [error, setError] = useState<ActionError | null>(null);
+  const [scheduling, setScheduling] = useState(false);
+  const [when, setWhen] = useState(() => toLocalInput(new Date(post.scheduledAt && Date.parse(post.scheduledAt) > Date.now() ? post.scheduledAt : Date.now() + 3600_000)));
+  const uploading = post.targets.some((t) => t.job?.status === "uploading");
+  const pending = post.targets.some((t) => t.job?.status === "queued");
+
+  async function call(kind: "publish" | "schedule" | "delete", url: string, init: RequestInit, success: string) {
+    setBusy(kind);
+    setError(null);
+    try {
+      const res = await fetch(url, init);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError({ message: data.error ?? `Request failed (${res.status})`, validation: data.validation });
+        return;
+      }
+      setScheduling(false);
+      onChanged(success);
+    } catch (err) {
+      setError({ message: (err as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const publish = (scheduledAt: string | null) =>
+    call(
+      scheduledAt ? "schedule" : "publish",
+      `/api/posts/${post.id}/publish`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scheduledAt }) },
+      scheduledAt ? `Scheduled “${post.title || "Untitled"}” for ${formatDateTime(scheduledAt)}.` : `Publishing “${post.title || "Untitled"}”…`,
+    );
+
+  const remove = () => {
+    const msg = draft
+      ? "Delete this draft? This can't be undone."
+      : pending
+        ? "Delete this post? Queued and scheduled jobs will be cancelled. Already-published videos stay on the platforms."
+        : "Delete this post from the history? Already-published videos stay on the platforms.";
+    if (!confirm(msg)) return;
+    call("delete", `/api/posts/${post.id}`, { method: "DELETE" }, draft ? "Draft deleted." : "Post deleted.");
+  };
+
+  const scheduleInvalid = !when || Date.parse(new Date(when).toISOString()) <= Date.now();
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {draft && (
+          <>
+            <Link href={`/compose?draft=${post.id}`} className={btn.small}>
+              Edit
+            </Link>
+            <button type="button" className={btn.small} disabled={busy !== null} onClick={() => publish(null)}>
+              {busy === "publish" ? "Publishing…" : "Publish now"}
+            </button>
+            <button type="button" className={btn.small} disabled={busy !== null} onClick={() => setScheduling((v) => !v)}>
+              Schedule…
+            </button>
+          </>
+        )}
+        <button
+          type="button"
+          className={cx(btn.small, "text-red-600 dark:text-red-400")}
+          disabled={busy !== null || uploading}
+          title={uploading ? "Can't delete while a video is uploading" : undefined}
+          onClick={remove}
+        >
+          {busy === "delete" ? "Deleting…" : "Delete"}
+        </button>
+      </div>
+      {scheduling && (
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="datetime-local"
+            className={cx(inputCls, "w-auto py-1 text-xs")}
+            value={when}
+            min={toLocalInput(new Date())}
+            onChange={(e) => setWhen(e.target.value)}
+          />
+          <button
+            type="button"
+            className={btn.small}
+            disabled={busy !== null || scheduleInvalid}
+            onClick={() => publish(new Date(when).toISOString())}
+          >
+            {busy === "schedule" ? "Scheduling…" : "Confirm schedule"}
+          </button>
+          <button type="button" className={btn.ghost} onClick={() => setScheduling(false)}>
+            Cancel
+          </button>
+        </div>
+      )}
+      {error && (
+        <div className="rounded-lg bg-red-50 p-2 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
+          <p className="font-medium">{error.message}</p>
+          {error.validation
+            ?.filter((v) => !v.ok)
+            .map((v) => (
+              <p key={v.platform} className="mt-1">
+                <span className="font-medium">{PLATFORM_RULES[v.platform].displayName}:</span> {v.errors.map((e) => e.message).join(" ")}
+              </p>
+            ))}
+          {draft && error.validation && (
+            <Link href={`/compose?draft=${post.id}`} className="mt-1 inline-block font-medium underline">
+              Fix in editor →
+            </Link>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PostCard({
   post,
   highlighted,
   onRetry,
   retrying,
+  onChanged,
 }: {
   post: PostSummary;
   highlighted: boolean;
   onRetry: (jobId: string) => void;
   retrying: Set<string>;
+  onChanged: (notice: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (highlighted) ref.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [highlighted]);
+  const draft = isDraft(post);
 
   return (
     <div ref={ref}>
-      <Card className={cx("overflow-hidden transition", highlighted && "ring-2 ring-violet-500")}>
+      <Card className={cx("overflow-hidden transition", highlighted && "ring-2 ring-violet-500", draft && "border-dashed")}>
         <div className="flex gap-4 p-4">
           <div className="flex h-20 w-32 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-neutral-100 dark:bg-neutral-800">
             {post.thumbnail ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={`/api/media/${post.thumbnail.id}`} alt="" className="h-full w-full object-cover" />
             ) : (
-              <span className="text-2xl">🎬</span>
+              <span className="text-2xl">{draft ? "📝" : "🎬"}</span>
             )}
           </div>
           <div className="min-w-0 flex-1 space-y-1">
@@ -150,17 +284,25 @@ function PostCard({
             </div>
             {post.caption && <p className="line-clamp-2 text-sm text-neutral-600 dark:text-neutral-400">{post.caption}</p>}
             <p className="text-xs text-neutral-500">
-              Created {formatDateTime(post.createdAt)}
-              {post.scheduledAt && <> · scheduled for {formatDateTime(post.scheduledAt)}</>}
+              {draft ? "Last edited" : "Created"} {formatDateTime(draft ? post.updatedAt : post.createdAt)}
+              {post.scheduledAt && <> · {draft ? "planned for" : "scheduled for"} {formatDateTime(post.scheduledAt)}</>}
               {post.media?.durationSec ? <> · {formatDuration(post.media.durationSec)}</> : null}
+              {draft && !post.media && <span className="text-amber-600"> · no video yet</span>}
             </p>
+            <div className="pt-1">
+              <PostActions post={post} onChanged={onChanged} />
+            </div>
           </div>
         </div>
-        <ul className="divide-y divide-neutral-100 border-t border-neutral-100 px-4 dark:divide-neutral-800 dark:border-neutral-800">
-          {post.targets.map((t) => (
-            <TargetRow key={t.id} target={t} onRetry={onRetry} retrying={!!t.job && retrying.has(t.job.id)} />
-          ))}
-        </ul>
+        {post.targets.length > 0 ? (
+          <ul className="divide-y divide-neutral-100 border-t border-neutral-100 px-4 dark:divide-neutral-800 dark:border-neutral-800">
+            {post.targets.map((t) => (
+              <TargetRow key={t.id} target={t} onRetry={onRetry} retrying={!!t.job && retrying.has(t.job.id)} />
+            ))}
+          </ul>
+        ) : (
+          <p className="border-t border-neutral-100 px-4 py-3 text-xs text-neutral-500 dark:border-neutral-800">No platforms selected yet.</p>
+        )}
       </Card>
     </div>
   );
@@ -173,6 +315,7 @@ export function Dashboard({ highlight, initialView = "list" }: { highlight: stri
   const [notice, setNotice] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<Set<string>>(new Set());
   const [view, setView] = useState<"list" | "calendar">(initialView);
+  const [filter, setFilter] = useState<"all" | "drafts">("all");
   const [selected, setSelected] = useState<string | null>(highlight);
   const select = (id: string) => {
     setView("list");
@@ -299,7 +442,27 @@ export function Dashboard({ highlight, initialView = "list" }: { highlight: stri
         <>
           <UpcomingList posts={posts} onSelect={select} />
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold">{view === "list" ? "Publication history" : "Calendar"}</h2>
+            <div className="flex items-center gap-3">
+              <h2 className="text-sm font-semibold">{view === "list" ? (filter === "drafts" ? "Drafts" : "Publication history") : "Calendar"}</h2>
+              {view === "list" && (
+                <div className="inline-flex rounded-lg border border-neutral-200 p-0.5 text-xs dark:border-neutral-800">
+                  {(["all", "drafts"] as const).map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      aria-pressed={filter === f}
+                      onClick={() => setFilter(f)}
+                      className={cx(
+                        "rounded-md px-2 py-0.5 capitalize",
+                        filter === f ? "bg-neutral-200 font-medium dark:bg-neutral-800" : "text-neutral-500",
+                      )}
+                    >
+                      {f === "drafts" ? `Drafts (${posts.filter(isDraft).length})` : "All"}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="inline-flex rounded-lg border border-neutral-200 p-0.5 text-sm dark:border-neutral-800" role="tablist">
               {(["list", "calendar"] as const).map((v) => (
                 <button
@@ -322,9 +485,24 @@ export function Dashboard({ highlight, initialView = "list" }: { highlight: stri
             <MonthCalendar posts={posts} onSelect={select} />
           ) : (
             <div className="space-y-4">
-              {posts.map((p) => (
-                <PostCard key={p.id} post={p} highlighted={p.id === selected} onRetry={retry} retrying={retrying} />
+              {(filter === "drafts" ? posts.filter(isDraft) : posts).map((p) => (
+                <PostCard
+                  key={p.id}
+                  post={p}
+                  highlighted={p.id === selected}
+                  onRetry={retry}
+                  retrying={retrying}
+                  onChanged={(msg) => {
+                    setNotice(msg);
+                    load();
+                  }}
+                />
               ))}
+              {filter === "drafts" && !posts.some(isDraft) && (
+                <p className="text-sm text-neutral-500">
+                  No drafts. Use <span className="font-medium">Save draft</span> in Compose to keep work in progress.
+                </p>
+              )}
             </div>
           )}
         </>

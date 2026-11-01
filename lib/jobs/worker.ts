@@ -1,11 +1,18 @@
+import { randomUUID } from "node:crypto";
+import os from "node:os";
 import { getDb, type DB } from "@/lib/db";
 import { claimNextJob, requeueOrphanedJobs } from "@/lib/db/repo";
 import type { PublishJob } from "@/lib/types";
+import { acquireLease, isDeadLocalOwner, readLease, releaseLease, renewLease, type LeaseRow } from "./lease";
 import { executeJob, type RunnerOptions } from "./runner";
 
 export interface WorkerOptions extends RunnerOptions {
   concurrency?: number;
   intervalMs?: number;
+  /** A lease whose heartbeat is older than this is considered abandoned. Default: max(60s, 6 × interval). */
+  leaseStaleMs?: number;
+  /** Lease owner id (defaults to host:pid:random). */
+  owner?: string;
 }
 
 const envInt = (name: string, fallback: number) => {
@@ -14,15 +21,24 @@ const envInt = (name: string, fallback: number) => {
 };
 
 /**
- * In-process publish worker. Polls for due jobs on an interval and runs up to
- * `concurrency` at once. Safe within a single Node process only (SQLite claims are atomic,
- * but there is no cross-process lease) — run one app instance.
+ * In-process publish worker. Polls for due jobs on an interval and runs up to `concurrency` at once.
+ *
+ * Restart safety: `start()` takes a SQLite lease (see lease.ts). Only the lease holder claims jobs
+ * and recovers jobs orphaned in `uploading` by a crashed process. A second process on the same DB
+ * stays in standby and takes over if the holder's heartbeat goes stale. Still: run one app instance.
  */
 export class PublishWorker {
   private inFlight = new Map<string, Promise<PublishJob>>();
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** True once start() was called: from then on jobs are only claimed while holding the lease. */
+  private leaseMode = false;
+  private holdsLease = false;
   readonly concurrency: number;
   readonly intervalMs: number;
+  readonly owner: string;
+  readonly leaseStaleMs: number;
+  /** Jobs recovered from a previous process on the last lease acquisition. */
+  lastRecovered: PublishJob[] = [];
 
   constructor(
     private readonly db: DB,
@@ -30,6 +46,8 @@ export class PublishWorker {
   ) {
     this.concurrency = Math.max(1, opts.concurrency ?? 2);
     this.intervalMs = opts.intervalMs ?? 5000;
+    this.owner = opts.owner ?? `${os.hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
+    this.leaseStaleMs = opts.leaseStaleMs ?? Math.max(60_000, this.intervalMs * 6);
   }
 
   get running(): boolean {
@@ -40,10 +58,23 @@ export class PublishWorker {
     return [...this.inFlight.keys()];
   }
 
+  /** Whether this process may claim jobs (always true for workers that were never started, e.g. tests). */
+  get active(): boolean {
+    return !this.leaseMode || this.holdsLease;
+  }
+
+  status(): { running: boolean; holdsLease: boolean; owner: string; lease: LeaseRow | null; active: string[] } {
+    return { running: this.running, holdsLease: this.holdsLease, owner: this.owner, lease: readLease(this.db), active: this.activeJobIds };
+  }
+
   start(): void {
     if (this.timer) return;
-    requeueOrphanedJobs(this.db);
-    this.timer = setInterval(() => this.kick(), this.intervalMs);
+    this.leaseMode = true;
+    this.heartbeat();
+    this.timer = setInterval(() => {
+      this.heartbeat();
+      this.kick();
+    }, this.intervalMs);
     this.timer.unref?.();
     this.kick();
   }
@@ -51,10 +82,33 @@ export class PublishWorker {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    if (this.holdsLease) releaseLease(this.db, this.owner);
+    this.holdsLease = false;
   }
+
+  /** Renew our lease, or try to acquire it; on (re)acquisition recover orphaned jobs. */
+  private heartbeat(): void {
+    if (this.holdsLease && renewLease(this.db, this.owner)) return;
+    const wasHolding = this.holdsLease;
+    this.holdsLease = acquireLease(this.db, this.owner, this.leaseStaleMs, new Date(), (o) =>
+      isDeadLocalOwner(o, os.hostname()),
+    );
+    if (this.holdsLease && !wasHolding) {
+      // Anything still `uploading` belongs to a process that no longer holds the lease (crashed/restarted).
+      this.lastRecovered = requeueOrphanedJobs(this.db, this.inFlight.keys());
+      if (this.lastRecovered.length) {
+        console.warn(`[worker] recovered ${this.lastRecovered.length} job(s) interrupted by a previous process`);
+      }
+    } else if (!this.holdsLease && !wasHolding && this.lastStandbyLog < Date.now() - 60_000) {
+      this.lastStandbyLog = Date.now();
+      console.warn(`[worker] standby: another process holds the worker lease (${readLease(this.db)?.owner})`);
+    }
+  }
+  private lastStandbyLog = 0;
 
   /** Claim due jobs up to the concurrency limit and start them. Returns the started promises. */
   kick(): Promise<PublishJob>[] {
+    if (!this.active) return [];
     const started: Promise<PublishJob>[] = [];
     while (this.inFlight.size < this.concurrency) {
       const job = claimNextJob(this.db);
@@ -107,6 +161,15 @@ export function getWorker(): PublishWorker {
 export function ensureWorker(): PublishWorker {
   const worker = getWorker();
   const disabled = process.env.WORKER_DISABLED === "true" || process.env.NEXT_PHASE === "phase-production-build";
-  if (!disabled) worker.start();
+  if (!disabled && !worker.running) {
+    worker.start();
+    // Release the lease on shutdown so a restarted server can take over immediately.
+    for (const sig of ["SIGTERM", "SIGINT"] as const) {
+      process.once(sig, () => {
+        worker.stop();
+        process.exit(0);
+      });
+    }
+  }
   return worker;
 }

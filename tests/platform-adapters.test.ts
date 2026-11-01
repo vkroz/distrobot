@@ -28,6 +28,7 @@ afterAll(() => fs.rm(dir, { recursive: true, force: true }));
 const media: Media = {
   id: "m1",
   kind: "video",
+  metadataSource: null,
   originalFilename: "video.mp4",
   storagePath: "video.mp4",
   mimeType: "video/mp4",
@@ -45,7 +46,7 @@ const req = (over: Partial<PublishRequest> = {}): PublishRequest => ({
   media,
   mediaPath: videoPath,
   visibility: "public",
-  settings: {},
+  settings: { privacyLevel: "PUBLIC_TO_EVERYONE" },
   ...over,
 });
 
@@ -135,7 +136,16 @@ describe("TikTok", () => {
     expect(res.url).toBe("https://www.tiktok.com/@maker/video/777");
     const init = m.calls.find((c) => c.url.endsWith("/video/init/"))!;
     expect(jsonBody(init)).toMatchObject({
-      post_info: { title: "Hello world\n\n#tag", privacy_level: "PUBLIC_TO_EVERYONE" },
+      post_info: {
+        title: "Hello world\n\n#tag",
+        privacy_level: "PUBLIC_TO_EVERYONE",
+        // Interactions are off unless the user turns them on; no commercial disclosure.
+        disable_comment: true,
+        disable_duet: true,
+        disable_stitch: true,
+        brand_content_toggle: false,
+        brand_organic_toggle: false,
+      },
       source_info: { source: "FILE_UPLOAD", video_size: FILE_SIZE, chunk_size: 400, total_chunk_count: 2 },
     });
     const puts = m.calls.filter((c) => c.method === "PUT");
@@ -144,15 +154,36 @@ describe("TikTok", () => {
     expect(checkpoints.at(-1)).toMatchObject({ publishId: "pub1", uploaded: true });
   });
 
-  it("falls back to an allowed privacy level with a warning", async () => {
+  it("sends the user's interaction and commercial-disclosure choices", async () => {
     const m = mockFetch(route(["PUBLISH_COMPLETE"]));
-    const res = await new TikTokAdapter({ pollIntervalMs: 1 }).publish(req({ visibility: "unlisted" }), {
-      account: account("tiktok"),
-      dryRun: false,
-      fetch: m.fetch,
+    await new TikTokAdapter({ pollIntervalMs: 1 }).publish(
+      req({
+        settings: {
+          privacyLevel: "PUBLIC_TO_EVERYONE",
+          allowComment: true,
+          allowDuet: true,
+          commercial: { enabled: true, yourBrand: true, brandedContent: true },
+        },
+      }),
+      { account: account("tiktok"), dryRun: false, fetch: m.fetch },
+    );
+    expect(jsonBody(m.calls.find((c) => c.url.endsWith("/video/init/"))!).post_info).toMatchObject({
+      disable_comment: false,
+      disable_duet: false,
+      disable_stitch: true,
+      brand_organic_toggle: true,
+      brand_content_toggle: true,
     });
-    expect(jsonBody(m.calls.find((c) => c.url.endsWith("/video/init/"))!).post_info.privacy_level).toBe("SELF_ONLY");
-    expect(res.warnings.join(" ")).toMatch(/SELF_ONLY/);
+  });
+
+  it("never picks a privacy level for the user: missing or disallowed choices fail before upload", async () => {
+    for (const settings of [{}, { privacyLevel: "FOLLOWER_OF_CREATOR" }]) {
+      const m = mockFetch(route(["PUBLISH_COMPLETE"]));
+      await expect(
+        new TikTokAdapter({ pollIntervalMs: 1 }).publish(req({ settings }), { account: account("tiktok"), dryRun: false, fetch: m.fetch }),
+      ).rejects.toMatchObject({ code: "validation_failed", retryable: false });
+      expect(m.calls.some((c) => c.url.endsWith("/video/init/"))).toBe(false);
+    }
   });
 
   it("resumes from an uploaded checkpoint by polling only", async () => {

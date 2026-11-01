@@ -38,6 +38,8 @@ export interface MediaInfo {
 export interface Media extends MediaInfo {
   id: string;
   kind: MediaKind;
+  /** "ffprobe" = measured on the server; "client" = reported by the browser; null = unknown. */
+  metadataSource: "ffprobe" | "client" | null;
   originalFilename: string;
   storagePath: string;
   checksum: string | null;

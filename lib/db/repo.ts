@@ -32,6 +32,7 @@ const nul = <T>(v: T | undefined): T | null => (v === undefined ? null : v);
 const toMedia = (r: Row): Media => ({
   id: String(r.id),
   kind: (r.kind as Media["kind"]) ?? "video",
+  metadataSource: (r.metadata_source as Media["metadataSource"]) ?? null,
   originalFilename: String(r.original_filename),
   storagePath: String(r.storage_path),
   mimeType: str(r.mime_type) ?? undefined,
@@ -120,19 +121,22 @@ function many<T>(db: DB, map: (r: Row) => T, sql: string, ...params: SqlValue[])
 // Media
 // ---------------------------------------------------------------------------
 
-export type NewMedia = Omit<Media, "id" | "createdAt" | "checksum" | "kind"> & {
+export type NewMedia = Omit<Media, "id" | "createdAt" | "checksum" | "kind" | "metadataSource"> & {
   checksum?: string | null;
   kind?: Media["kind"];
+  metadataSource?: Media["metadataSource"];
 };
 
 export function createMedia(db: DB, input: NewMedia): Media {
   const id = randomUUID();
   db.prepare(
-    `INSERT INTO media (id, kind, original_filename, storage_path, mime_type, size_bytes, duration_sec, width, height, checksum, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO media (id, kind, metadata_source, original_filename, storage_path, mime_type, size_bytes, duration_sec, width, height,
+       checksum, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.kind ?? "video",
+    nul(input.metadataSource),
     input.originalFilename,
     input.storagePath,
     nul(input.mimeType),
@@ -442,9 +446,23 @@ export function saveJobCheckpoint(db: DB, id: string, checkpoint: unknown): void
 }
 
 /** Jobs left `uploading` by a crashed/restarted process go back to the queue (or fail if out of attempts). */
-export function requeueOrphanedJobs(db: DB): PublishJob[] {
-  const orphans = many(db, toJob, "SELECT * FROM publish_jobs WHERE status = 'uploading'");
-  return orphans.map((j) => markJobFailed(db, j.id, "Interrupted by server restart", { retryable: true, delayMs: 0 }));
+/**
+ * Recover jobs left `uploading` by a process that died mid-upload. Only call this while holding the
+ * worker lease (otherwise you'd steal another live process's jobs).
+ *  - attempts remain → re-queued immediately; adapters with resume checkpoints continue the upload
+ *  - out of attempts → failed with a clear message (can be retried manually)
+ */
+export function requeueOrphanedJobs(db: DB, exclude: Iterable<string> = []): PublishJob[] {
+  const skip = new Set(exclude);
+  const orphans = many(db, toJob, "SELECT * FROM publish_jobs WHERE status = 'uploading'").filter((j) => !skip.has(j.id));
+  return orphans.map((j) => {
+    const canRetry = j.attempts < j.maxAttempts;
+    const message = canRetry
+      ? `Interrupted by a server restart during upload (attempt ${j.attempts}/${j.maxAttempts}); re-queued automatically.`
+      : `Interrupted by a server restart during upload and no attempts are left (${j.attempts}/${j.maxAttempts}). ` +
+        "Check the platform for a partial post, then retry manually.";
+    return markJobFailed(db, j.id, message, { retryable: canRetry, delayMs: 0 });
+  });
 }
 
 export const listRecentJobs = (db: DB, limit = 200) =>

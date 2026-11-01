@@ -73,6 +73,26 @@ function DropZone({
   );
 }
 
+function MetadataSource({ state }: { state: UploadState }) {
+  if (state.status === "probing") return null;
+  if (state.source === "ffprobe") {
+    return (
+      <p className="text-[11px] text-emerald-700 dark:text-emerald-400" title="Duration and dimensions were measured on the server with ffprobe">
+        ✓ Measured on server (ffprobe)
+      </p>
+    );
+  }
+  if (state.status === "uploading") return <p className="text-[11px] text-neutral-500">From browser · server will re-measure after upload</p>;
+  if (state.source === "browser") {
+    return (
+      <p className="text-[11px] text-amber-700 dark:text-amber-400" title="The server couldn't read this file with ffprobe; using what the browser reported">
+        From browser (server measurement unavailable)
+      </p>
+    );
+  }
+  return <p className="text-[11px] text-amber-700 dark:text-amber-400">Duration/dimensions unknown — aspect and length checks are skipped</p>;
+}
+
 export function VideoPicker({ state, onFile, onClear }: { state: UploadState | null; onFile: (f: File) => void; onClear: () => void }) {
   if (!state) {
     return (
@@ -91,8 +111,8 @@ export function VideoPicker({ state, onFile, onClear }: { state: UploadState | n
         <video src={state.objectUrl} controls muted playsInline className="max-h-full max-w-full" />
       </div>
       <div className="min-w-0 flex-1 space-y-2">
-        <p className="truncate text-sm font-medium" title={state.file.name}>
-          {state.file.name}
+        <p className="truncate text-sm font-medium" title={state.name}>
+          {state.name}
         </p>
         <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-neutral-600 dark:text-neutral-400">
           <dt>Duration</dt>
@@ -107,6 +127,7 @@ export function VideoPicker({ state, onFile, onClear }: { state: UploadState | n
           <dt>Type</dt>
           <dd className="font-medium text-neutral-900 dark:text-neutral-100">{info.mimeType ?? "unknown"}</dd>
         </dl>
+        <MetadataSource state={state} />
         <Progress state={state} />
         <div className="flex gap-2 pt-1">
           <label className="cursor-pointer text-xs font-medium text-violet-600 hover:underline">

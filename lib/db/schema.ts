@@ -113,4 +113,20 @@ export const MIGRATIONS: Array<{ version: number; name: string; sql: string }> =
       );
     `,
   },
+  {
+    version: 3,
+    name: "probe_and_worker_lease",
+    sql: /* sql */ `
+      -- Where duration/width/height came from: 'ffprobe' (server-measured) or 'client' (browser-reported).
+      ALTER TABLE media ADD COLUMN metadata_source TEXT CHECK (metadata_source IN ('ffprobe','client'));
+
+      -- Single-row lease so only one process runs the publish worker against this database.
+      CREATE TABLE worker_lease (
+        id           INTEGER PRIMARY KEY CHECK (id = 1),
+        owner        TEXT NOT NULL,
+        acquired_at  TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL
+      );
+    `,
+  },
 ];

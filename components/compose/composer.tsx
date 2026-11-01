@@ -2,16 +2,17 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { PLATFORM_RULES } from "@/lib/platforms/rules";
 import { countText } from "@/lib/platforms/text";
 import { resolveTargetContent, validateForPlatform, type ValidationResult } from "@/lib/platforms/validate";
-import type { PlatformStatus } from "@/lib/services/posts";
+import type { PlatformStatus, PostSummary } from "@/lib/services/posts";
 import { PLATFORM_IDS, VISIBILITIES, type PlatformId, type TargetContent, type Visibility } from "@/lib/types";
 import { Badge, Card, Field, PlatformIcon, btn, cx, inputCls } from "../ui";
 import { HashtagInput } from "./hashtag-input";
 import { ThumbnailPicker, VideoPicker } from "./media-picker";
 import { EMPTY_OVERRIDE, PlatformPanel, PlatformStatusBadge, type Override } from "./platform-panel";
+import { TikTokConsent, TikTokSettingsCard, useTikTokCreator } from "./tiktok-settings";
 import { useUpload } from "./use-upload";
 
 const DEFAULT_SELECTED: PlatformId[] = ["youtube", "tiktok", "instagram"];
@@ -33,10 +34,17 @@ interface SubmitError {
   validation?: ValidationResult[];
 }
 
-export function Composer() {
+type DraftLoad = { status: "idle" } | { status: "loading" } | { status: "error"; message: string } | { status: "locked"; post: PostSummary };
+
+export function Composer({ draftId: initialDraftId = null }: { draftId?: string | null }) {
   const router = useRouter();
   const video = useUpload("video");
   const thumb = useUpload("image");
+  const [draftId, setDraftId] = useState<string | null>(initialDraftId);
+  const [draftLoad, setDraftLoad] = useState<DraftLoad>(initialDraftId ? { status: "loading" } : { status: "idle" });
+  const [notice, setNotice] = useState<string | null>(null);
+  /** Per-platform posting settings (currently TikTok's required posting UX). */
+  const [settings, setSettings] = useState<Partial<Record<PlatformId, Record<string, unknown>>>>({});
 
   const [title, setTitle] = useState("");
   const [caption, setCaption] = useState("");
@@ -48,7 +56,7 @@ export function Composer() {
   const [overrides, setOverrides] = useState<Partial<Record<PlatformId, Override>>>({});
   const [statuses, setStatuses] = useState<Partial<Record<PlatformId, PlatformStatus>>>({});
   const [dryRunMode, setDryRunMode] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState<null | "draft" | "publish">(null);
+  const [submitting, setSubmitting] = useState<null | "draft" | "publish" | "delete">(null);
   const [submitError, setSubmitError] = useState<SubmitError | null>(null);
 
   useEffect(() => {
@@ -66,6 +74,58 @@ export function Composer() {
     };
   }, []);
 
+  // Load an existing draft (?draft=<id>) into the form.
+  const { setExisting: setVideo } = video;
+  const { setExisting: setThumb } = thumb;
+  const loadDraft = useCallback(
+    async (id: string) => {
+      setDraftLoad({ status: "loading" });
+      try {
+        const res = await fetch(`/api/posts/${id}`, { cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error ?? `Couldn't load draft (${res.status})`);
+        const post = data.post as PostSummary;
+        if (post.status !== "draft" || post.targets.some((t) => t.job)) {
+          setDraftLoad({ status: "locked", post });
+          return;
+        }
+        setTitle(post.title);
+        setCaption(post.caption);
+        setHashtags(post.hashtags);
+        setVisibility(post.visibility);
+        if (post.scheduledAt) {
+          setScheduleEnabled(true);
+          setScheduleLocal(toLocalInput(new Date(post.scheduledAt)));
+        } else {
+          setScheduleEnabled(false);
+          setScheduleLocal("");
+        }
+        const platforms = PLATFORM_IDS.filter((p) => post.targets.some((t) => t.platform === p));
+        setSelected(platforms);
+        setOverrides(
+          Object.fromEntries(
+            post.targets.map((t) => [t.platform, { title: t.titleOverride, caption: t.captionOverride, hashtags: t.hashtagsOverride }]),
+          ),
+        );
+        setSettings(Object.fromEntries(post.targets.map((t) => [t.platform, t.settings ?? {}])));
+        setVideo(post.media);
+        setThumb(post.thumbnail);
+        setDraftLoad({ status: "idle" });
+      } catch (err) {
+        setDraftLoad({ status: "error", message: (err as Error).message });
+      }
+    },
+    [setVideo, setThumb],
+  );
+
+  useEffect(() => {
+    if (initialDraftId) loadDraft(initialDraftId);
+  }, [initialDraftId, loadDraft]);
+
+  const tiktokSelected = selected.includes("tiktok");
+  const creatorState = useTikTokCreator(tiktokSelected);
+  const tiktokCreator = creatorState?.status === "ok" ? creatorState.creator : null;
+
   const base: TargetContent = useMemo(() => ({ title, caption, hashtags }), [title, caption, hashtags]);
   const info = video.state?.info;
   const scheduledAt = scheduleEnabled && scheduleLocal ? new Date(scheduleLocal).toISOString() : null;
@@ -78,14 +138,18 @@ export function Composer() {
         platform: p,
         content: resolveTargetContent(base, { titleOverride: o.title, captionOverride: o.caption, hashtagsOverride: o.hashtags }),
         media: info,
+        // Platform posting settings are checked live (TikTok: privacy choice, disclosure, creator limits).
+        settings: p === "tiktok" ? (settings.tiktok ?? {}) : undefined,
+        tiktokCreator: p === "tiktok" ? tiktokCreator : undefined,
       });
     }
     return out;
-  }, [selected, overrides, base, info]);
+  }, [selected, overrides, base, info, settings, tiktokCreator]);
 
   const errorCount = selected.reduce((n, p) => n + results[p].errors.length, 0);
   const warningCount = selected.reduce((n, p) => n + results[p].warnings.length, 0);
-  const uploading = video.state?.status === "uploading" || video.state?.status === "probing" || thumb.state?.status === "uploading";
+  const uploading =
+    video.state?.status === "uploading" || video.state?.status === "probing" || thumb.state?.status === "uploading" || thumb.state?.status === "probing";
   const mediaId = video.state?.media?.id ?? null;
   const scheduleInvalid = scheduleEnabled && (!scheduleLocal || Date.parse(scheduledAt!) < Date.now());
 
@@ -97,6 +161,9 @@ export function Composer() {
   if (!selected.length) blockers.push("Select at least one platform");
   if (errorCount) blockers.push(`Fix ${errorCount} error${errorCount > 1 ? "s" : ""}`);
   if (scheduleInvalid) blockers.push("Pick a future schedule time");
+  if (tiktokSelected && creatorState?.status === "error") blockers.push("TikTok creator info unavailable — deselect TikTok or retry later");
+  if (tiktokSelected && (!creatorState || creatorState.status === "loading")) blockers.push("Loading TikTok creator info");
+  const locked = draftLoad.status === "locked" || draftLoad.status === "loading";
 
   const togglePlatform = (p: PlatformId) =>
     setSelected((s) => (s.includes(p) ? s.filter((x) => x !== p) : PLATFORM_IDS.filter((x) => x === p || s.includes(x))));
@@ -107,12 +174,13 @@ export function Composer() {
     .reduce<number | null>((min, t) => (min === null || t.maxLength! < min ? t.maxLength! : min), null);
 
   async function submit(action: "draft" | "publish") {
-    if (!mediaId) return;
+    if (action === "publish" && !mediaId) return;
     setSubmitting(action);
     setSubmitError(null);
+    setNotice(null);
     try {
-      const res = await fetch("/api/posts", {
-        method: "POST",
+      const res = await fetch(draftId ? `/api/posts/${draftId}` : "/api/posts", {
+        method: draftId ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title,
@@ -125,13 +193,29 @@ export function Composer() {
           action,
           targets: selected.map((platform) => {
             const o = overrides[platform] ?? EMPTY_OVERRIDE;
-            return { platform, titleOverride: o.title, captionOverride: o.caption, hashtagsOverride: o.hashtags, settings: {} };
+            return {
+              platform,
+              titleOverride: o.title,
+              captionOverride: o.caption,
+              hashtagsOverride: o.hashtags,
+              settings: settings[platform] ?? {},
+            };
           }),
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setSubmitError({ message: data.error ?? `Request failed (${res.status})`, validation: data.validation });
+        return;
+      }
+      if (action === "draft") {
+        const id = data.post.id as string;
+        if (!draftId) {
+          setDraftId(id);
+          // Update the URL without a navigation (a navigation would remount the composer and drop local previews).
+          window.history.replaceState(null, "", `/compose?draft=${id}`);
+        }
+        setNotice(`Draft saved ${new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}.`);
         return;
       }
       router.push(`/dashboard?post=${data.post.id}`);
@@ -142,12 +226,76 @@ export function Composer() {
     }
   }
 
+  async function deleteDraft() {
+    if (!draftId || !confirm("Delete this draft? This can't be undone.")) return;
+    setSubmitting("delete");
+    try {
+      const res = await fetch(`/api/posts/${draftId}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setSubmitError({ message: data.error ?? `Delete failed (${res.status})` });
+        return;
+      }
+      router.push("/dashboard");
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
+  if (draftLoad.status === "loading") {
+    return <div className="h-64 animate-pulse rounded-xl bg-neutral-200/60 dark:bg-neutral-800/60" />;
+  }
+  if (draftLoad.status === "error") {
+    return (
+      <Card className="p-8 text-center">
+        <p className="font-medium">Couldn&apos;t open this draft</p>
+        <p className="mt-1 text-sm text-neutral-500">{draftLoad.message}</p>
+        <Link href="/compose" className={cx(btn.primary, "mt-4")}>
+          Start a new post
+        </Link>
+      </Card>
+    );
+  }
+  if (draftLoad.status === "locked") {
+    const p = draftLoad.post;
+    return (
+      <Card className="p-8 text-center">
+        <p className="font-medium">“{p.title || "Untitled"}” is no longer a draft</p>
+        <p className="mt-1 text-sm text-neutral-500">
+          It has been {p.status === "scheduled" ? "scheduled" : "published or queued"}, so it can&apos;t be edited here.
+        </p>
+        <div className="mt-4 flex justify-center gap-2">
+          <Link href={`/dashboard?post=${p.id}`} className={btn.primary}>
+            View on dashboard
+          </Link>
+          <Link href="/compose" className={btn.secondary}>
+            New post
+          </Link>
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <div className="space-y-8">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Compose</h1>
-          <p className="mt-1 text-sm text-neutral-500">One video, every platform. Validation updates as you type.</p>
+          <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+            {draftId ? "Edit draft" : "Compose"}
+            {draftId && <Badge>draft</Badge>}
+          </h1>
+          <p className="mt-1 text-sm text-neutral-500">
+            {draftId ? (
+              <>
+                Changes are saved when you click Save draft.{" "}
+                <Link href="/compose" className="font-medium text-violet-600 hover:underline">
+                  Start a new post
+                </Link>
+              </>
+            ) : (
+              "One video, every platform. Validation updates as you type."
+            )}
+          </p>
         </div>
         {dryRunMode && dryRunMode !== "off" && (
           <Badge tone="amber">
@@ -242,6 +390,16 @@ export function Composer() {
               </Field>
             </div>
           </Card>
+
+          {tiktokSelected && (
+            <TikTokSettingsCard
+              value={settings.tiktok}
+              onChange={(s) => setSettings((all) => ({ ...all, tiktok: s as Record<string, unknown> }))}
+              creatorState={creatorState}
+              durationSec={info?.durationSec}
+              issues={results.tiktok?.errors.filter((e) => e.field === "settings") ?? []}
+            />
+          )}
         </div>
 
         <div className="space-y-6">
@@ -311,6 +469,7 @@ export function Composer() {
                 ))}
               </ul>
             )}
+            {notice && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">{notice}</p>}
             {submitError && (
               <div className="rounded-lg bg-red-50 p-3 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
                 <p className="font-medium">{submitError.message}</p>
@@ -332,15 +491,16 @@ export function Composer() {
               <button
                 type="button"
                 className={cx(btn.secondary, "flex-1")}
-                disabled={!mediaId || uploading || !selected.length || submitting !== null}
+                disabled={uploading || submitting !== null || locked}
+                title={uploading ? "Wait for uploads to finish" : "Drafts can be saved before a video is added"}
                 onClick={() => submit("draft")}
               >
-                {submitting === "draft" ? "Saving…" : "Save draft"}
+                {submitting === "draft" ? "Saving…" : draftId ? "Save changes" : "Save draft"}
               </button>
               <button
                 type="button"
                 className={cx(btn.primary, "flex-1")}
-                disabled={blockers.length > 0 || uploading || submitting !== null}
+                disabled={blockers.length > 0 || uploading || submitting !== null || locked}
                 onClick={() => submit("publish")}
               >
                 {submitting === "publish"
@@ -350,6 +510,17 @@ export function Composer() {
                     : `Publish to ${selected.length} platform${selected.length === 1 ? "" : "s"}`}
               </button>
             </div>
+            {tiktokSelected && <TikTokConsent settings={settings.tiktok} className="border-t border-neutral-100 pt-3 dark:border-neutral-800" />}
+            {draftId && (
+              <button
+                type="button"
+                className="w-full text-center text-xs font-medium text-red-600 hover:underline disabled:opacity-40"
+                disabled={submitting !== null}
+                onClick={deleteDraft}
+              >
+                {submitting === "delete" ? "Deleting…" : "Delete draft"}
+              </button>
+            )}
           </Card>
         </div>
       </div>

@@ -75,12 +75,17 @@ export abstract class BaseAdapter implements PlatformAdapter {
     return getRules(this.platform, this.ruleOverrides(account));
   }
 
-  validate(content: TargetContent, media?: MediaInfo, account?: ConnectedAccount | null): ValidationResult {
-    return validateForPlatform({ platform: this.platform, content, media, overrides: this.ruleOverrides(account) });
+  validate(
+    content: TargetContent,
+    media?: MediaInfo,
+    account?: ConnectedAccount | null,
+    settings?: Record<string, unknown>,
+  ): ValidationResult {
+    return validateForPlatform({ platform: this.platform, content, media, overrides: this.ruleOverrides(account), settings });
   }
 
   async publish(req: PublishRequest, ctx: PublishContext): Promise<PublishResult> {
-    const validation = this.validate(req.content, req.media, ctx.account);
+    const validation = this.validate(req.content, req.media, ctx.account, req.settings);
     if (!validation.ok) {
       throw new AdapterError(
         "validation_failed",

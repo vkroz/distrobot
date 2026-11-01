@@ -97,7 +97,13 @@ export interface PlatformAdapter {
   isConfigured(): boolean;
   /** Rules, tightened/relaxed for a specific account (e.g. TikTok creator limits, X Premium). */
   getRules(account?: ConnectedAccount | null): PlatformRules;
-  validate(content: TargetContent, media?: MediaInfo, account?: ConnectedAccount | null): ValidationResult;
+  /** Pass `settings` to also check platform-specific posting settings (e.g. TikTok privacy). */
+  validate(
+    content: TargetContent,
+    media?: MediaInfo,
+    account?: ConnectedAccount | null,
+    settings?: Record<string, unknown>,
+  ): ValidationResult;
   publish(req: PublishRequest, ctx: PublishContext): Promise<PublishResult>;
   getAuthUrl(params: AuthUrlParams): string;
   handleCallback(params: CallbackParams): Promise<AccountCredentials>;

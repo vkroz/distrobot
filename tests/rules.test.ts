@@ -11,9 +11,11 @@ describe("PLATFORM_RULES", () => {
   it.each(PLATFORM_IDS)("%s rules are internally consistent", (id) => {
     const r = PLATFORM_RULES[id];
     expect(r.caption.supported).toBe(true);
-    expect(r.caption.maxLength).toBeGreaterThan(0);
-    if (r.caption.recommendedMaxLength) expect(r.caption.recommendedMaxLength).toBeLessThan(r.caption.maxLength!);
-    if (r.title.supported) expect(r.title.maxLength).toBeGreaterThan(0);
+    // Undocumented limits are left unset rather than invented (e.g. Vimeo description).
+    if (r.caption.maxLength !== undefined) expect(r.caption.maxLength).toBeGreaterThan(0);
+    if (r.caption.recommendedMaxLength && r.caption.maxLength) expect(r.caption.recommendedMaxLength).toBeLessThan(r.caption.maxLength);
+    // Supported titles have a hard limit or (when undocumented) a soft guideline.
+    if (r.title.supported) expect(r.title.maxLength ?? r.title.recommendedMaxLength).toBeGreaterThan(0);
     if (r.hashtags.max && r.hashtags.recommendedMax) expect(r.hashtags.recommendedMax).toBeLessThanOrEqual(r.hashtags.max);
     const v = r.video;
     if (v.minDurationSec && v.maxDurationSec) expect(v.minDurationSec).toBeLessThan(v.maxDurationSec);
@@ -38,7 +40,12 @@ describe("PLATFORM_RULES", () => {
     expect(PLATFORM_RULES.tiktok.caption.maxLength).toBe(2200);
     expect(PLATFORM_RULES.tiktok.video.preferredOrientation).toBe("vertical");
     expect(PLATFORM_RULES.linkedin.caption.maxLength).toBe(3000);
-    expect(PLATFORM_RULES.linkedin.video.maxFileSizeBytes).toBe(5 * GB);
+    expect(PLATFORM_RULES.linkedin.video.maxFileSizeBytes).toBe(500 * MB);
+    expect(PLATFORM_RULES.vimeo.hashtags).toMatchObject({ max: 20, maxTagLength: 32 });
+    // Not documented by the platforms → soft guidelines / not enforced, never invented hard caps.
+    expect([PLATFORM_RULES.facebook.title.maxLength, PLATFORM_RULES.facebook.title.recommendedMaxLength]).toEqual([undefined, 100]);
+    expect([PLATFORM_RULES.linkedin.title.maxLength, PLATFORM_RULES.linkedin.title.recommendedMaxLength]).toEqual([undefined, 200]);
+    expect(PLATFORM_RULES.vimeo.caption.maxLength).toBeUndefined();
     expect(PLATFORM_RULES.vimeo.hashtags.placement).toBe("tags");
   });
 });

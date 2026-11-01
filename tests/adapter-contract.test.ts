@@ -27,6 +27,7 @@ afterEach(() => vi.unstubAllEnvs());
 const media: Media = {
   id: "m",
   kind: "video",
+  metadataSource: null,
   originalFilename: "v.mp4",
   storagePath: "v.mp4",
   mimeType: "video/mp4",
@@ -44,7 +45,7 @@ const req = (over: Partial<PublishRequest> = {}): PublishRequest => ({
   media,
   mediaPath: videoPath,
   visibility: "public",
-  settings: {},
+  settings: { privacyLevel: "PUBLIC_TO_EVERYONE" }, // TikTok requires an explicit choice
   ...over,
 });
 
@@ -218,7 +219,7 @@ describe("configuration docs", () => {
       }
     }
     // Set by Next.js itself.
-    for (const internal of ["NEXT_PHASE", "NEXT_RUNTIME"]) used.delete(internal);
+    for (const internal of ["NEXT_PHASE", "NEXT_RUNTIME", "NODE_ENV"]) used.delete(internal);
     expect(used.size).toBeGreaterThan(5);
     const missing = [...used].filter((v) => !new RegExp(`^#?\\s*${v}=`, "m").test(example));
     expect(missing).toEqual([]);
