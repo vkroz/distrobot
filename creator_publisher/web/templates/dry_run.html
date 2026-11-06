@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge, picon %}
+{% block title %}Dry-run result · Creator Publisher{% endblock %}
+{% block content %}
+<div class="narrow stack-lg">
+  <a href="/dashboard?post={{ job.post_id }}" class="muted small link">← Back to dashboard</a>
+  <div class="row gap">
+    {{ picon(job.platform, pmeta) }}
+    <div>
+      <h1 class="h1">{{ r.display_name }} · dry-run</h1>
+      <p class="muted small">This is what would have been sent. Nothing was posted.</p>
+    </div>
+  </div>
+
+  <div class="card pad-x">
+    <dl class="dl">
+      <div class="dl-row"><dt>Status</dt><dd>
+        {{ badge(job.status, "green" if job.status == "published" else "red" if job.status == "failed" else "blue") }}
+        <span class="muted xs">attempt {{ job.attempts }}/{{ job.max_attempts }}{% if job.finished_at %} · finished {{ dt(job.finished_at) }}{% endif %}</span>
+      </dd></div>
+      {% if not payload %}
+      <div class="dl-row"><dt>Payload</dt><dd class="muted">Not available yet — the job hasn't completed.</dd></div>
+      {% else %}
+        {% if payload.title is not none and payload.title is defined %}
+        <div class="dl-row"><dt>{{ r.title.label }}</dt><dd>{{ payload.title or "—" }}</dd></div>
+        {% endif %}
+        <div class="dl-row"><dt>{{ r.caption.label }}</dt><dd><p class="pre">{{ payload.caption or "—" }}</p></dd></div>
+        {% if payload.tags %}
+        <div class="dl-row"><dt>Tags</dt><dd class="chips">{% for t in payload.tags %}{{ badge(t) }}{% endfor %}</dd></div>
+        {% endif %}
+        <div class="dl-row"><dt>Visibility</dt><dd class="capitalize">{{ payload.visibility or (post.visibility if post else "—") }}</dd></div>
+        <div class="dl-row"><dt>Scheduled</dt><dd>{{ dt(payload.scheduledAt) if payload.scheduledAt else "Immediately" }}</dd></div>
+        <div class="dl-row"><dt>Custom thumbnail</dt><dd>{{ "Yes" if payload.thumbnail else "No" }}</dd></div>
+        {% if payload.warnings %}
+        <div class="dl-row"><dt>Warnings</dt><dd><ul class="text-amber">{% for w in payload.warnings %}<li>⚠ {{ w }}</li>{% endfor %}</ul></dd></div>
+        {% endif %}
+      {% endif %}
+    </dl>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Creator Publisher{% endblock %}</title>
+  <meta name="description" content="Publish one video to every platform from one place.">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="topbar">
+    {% if session and (auth_cfg.using_default_credentials or auth_cfg.using_default_secret) %}
+    <div class="warn-banner">
+      ⚠ Using {% if auth_cfg.using_default_credentials %}demo login admin/admin{% endif %}{% if auth_cfg.using_default_credentials and auth_cfg.using_default_secret %} and {% endif %}{% if auth_cfg.using_default_secret %}development session secret{% endif %}
+      — set <code>APP_USERNAME</code>, <code>APP_PASSWORD</code> and <code>APP_SESSION_SECRET</code> before exposing this app.
+    </div>
+    {% endif %}
+    <div class="container topbar-row">
+      <a href="/dashboard" class="brand"><span class="brand-mark">▶</span>Creator Publisher</a>
+      {% if path != "/login" %}
+      <nav class="nav">
+        {% for href, label in [("/compose", "Compose"), ("/dashboard", "Dashboard"), ("/accounts", "Accounts")] %}
+        <a href="{{ href }}" class="nav-link{% if path == href or path.startswith(href ~ '/') %} active{% endif %}">{{ label }}</a>
+        {% endfor %}
+        {% if session %}
+        <span class="nav-user">
+          <span class="muted small hide-sm">{{ session.u }}</span>
+          <button type="button" class="nav-link" data-logout>Log out</button>
+        </span>
+        {% endif %}
+      </nav>
+      {% endif %}
+    </div>
+  </header>
+  <main class="container main">
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge %}
+{% block title %}Compose · Creator Publisher{% endblock %}
+{% block content %}
+{% if missing %}
+<div class="card pad-xl center">
+  <p class="bold">Couldn't open this draft</p>
+  <p class="muted small">{{ missing }}</p>
+  <a href="/compose" class="btn btn-primary mt">Start a new post</a>
+</div>
+{% elif locked %}
+<div class="card pad-xl center">
+  <p class="bold">“{{ locked.title or "Untitled" }}” is no longer a draft</p>
+  <p class="muted small">It has been {{ "scheduled" if locked.status == "scheduled" else "published or queued" }}, so it can't be edited here.</p>
+  <div class="row gap-sm center-x mt">
+    <a href="/dashboard?post={{ locked.id }}" class="btn btn-primary">View on dashboard</a>
+    <a href="/compose" class="btn btn-secondary">New post</a>
+  </div>
+</div>
+{% else %}
+<div class="stack-xl" id="composer">
+  <div class="row between wrap gap">
+    <div>
+      <h1 class="h1 row gap-sm"><span id="heading">{{ "Edit draft" if draft_id else "Compose" }}</span>
+        <span id="draft-badge" {% if not draft_id %}hidden{% endif %}>{{ badge("draft") }}</span></h1>
+      <p class="muted small" id="subheading">{% if draft_id %}Changes are saved when you click Save draft. <a href="/compose" class="link text-violet bold">Start a new post</a>{% else %}One video, every platform. Validation updates as you type.{% endif %}</p>
+    </div>
+    {% if dry_run_mode != "off" %}
+    {{ badge("Dry-run mode: nothing is actually posted" if dry_run_mode == "on" else "Unconfigured platforms run as dry-run", "amber") }}
+    {% endif %}
+  </div>
+
+  <div class="compose-grid">
+    <div class="stack-lg compose-main">
+      <div class="card pad">
+        <h2 class="h2 mb">Video</h2>
+        <div id="video-picker"></div>
+      </div>
+
+      <div class="card pad stack-lg">
+        <h2 class="h2">Details</h2>
+        <div class="field">
+          <div class="row between"><label class="label" for="title">Title</label><span class="xs muted tabular" id="title-count"></span></div>
+          <input id="title" class="input" placeholder="Give your video a title">
+          <p class="hint">Used where the platform supports titles (YouTube, Vimeo, Facebook, LinkedIn).</p>
+        </div>
+        <div class="field">
+          <div class="row between"><label class="label" for="caption">Description</label><span class="xs muted tabular" id="caption-count">0 chars</span></div>
+          <textarea id="caption" class="input textarea" placeholder="What's this video about?"></textarea>
+          <p class="hint">Becomes the caption / post text. Per-platform limits are checked below.</p>
+        </div>
+        <div class="field">
+          <span class="label">Hashtags / tags</span>
+          <div id="hashtags"></div>
+          <p class="hint">Appended to captions, or sent as tags on Vimeo. Enter, space or comma to add.</p>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <span class="label">Visibility</span>
+            <div class="seg seg-full" id="visibility">
+              <button type="button" data-vis="public">Public</button>
+              <button type="button" data-vis="unlisted">Unlisted</button>
+              <button type="button" data-vis="private">Private</button>
+            </div>
+            <p class="hint" id="visibility-hint"></p>
+          </div>
+          <div class="field">
+            <div class="row between">
+              <label class="label" for="schedule-at">Schedule</label>
+              <label class="xs muted row gap-xs"><input type="checkbox" id="schedule-enabled" class="accent"> Publish later</label>
+            </div>
+            <input type="datetime-local" id="schedule-at" class="input" disabled>
+            <p class="hint" id="schedule-hint">Publishes as soon as you hit Publish.</p>
+          </div>
+        </div>
+      </div>
+
+      <div id="tiktok-card" hidden></div>
+    </div>
+
+    <div class="stack-lg">
+      <div class="card pad">
+        <h2 class="h2 mb">Thumbnail</h2>
+        <div id="thumb-picker"></div>
+      </div>
+
+      <div class="card pad">
+        <div class="row between mb"><h2 class="h2">Platforms</h2><a href="/accounts" class="xs bold text-violet link">Manage accounts</a></div>
+        <div class="stack-sm" id="platform-list"></div>
+      </div>
+
+      <div class="card pad stack sticky">
+        <div class="row between small"><span class="bold">Ready to go?</span><span class="row gap-xs" id="counts"></span></div>
+        <ul class="xs muted stack-xs" id="blockers"></ul>
+        <p class="ok-box xs" id="notice" hidden></p>
+        <div class="err-box xs" id="submit-error" hidden></div>
+        <div class="row gap-sm wrap">
+          <button type="button" class="btn btn-secondary grow" id="btn-draft" title="Drafts can be saved before a video is added">Save draft</button>
+          <button type="button" class="btn btn-primary grow" id="btn-publish" disabled>Publish</button>
+        </div>
+        <p class="xs muted consent" id="tiktok-consent" hidden></p>
+        <button type="button" class="link-danger xs" id="btn-delete" {% if not draft_id %}hidden{% endif %}>Delete draft</button>
+      </div>
+    </div>
+  </div>
+
+  <section class="stack" id="previews" hidden>
+    <div>
+      <h2 class="h2-lg">Previews &amp; requirements</h2>
+      <p class="small muted">How each platform will receive your post. Fixes apply as per-platform overrides.</p>
+    </div>
+    <div class="grid-3" id="panels"></div>
+  </section>
+</div>
+<script type="application/json" id="boot">{{ boot|tojson }}</script>
+{% endif %}
+{% endblock %}
+{% block scripts %}{% if not missing and not locked %}<script src="/static/compose.js" defer></script>{% endif %}{% endblock %}

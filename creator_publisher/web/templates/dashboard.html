@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge, picon %}
+{% block title %}Dashboard · Creator Publisher{% endblock %}
+{% macro qs(view_=None, filter_=None, month_=None) -%}
+?view={{ view_ or view }}&filter={{ filter_ or filter }}{% if (month_ or "") %}&month={{ month_ }}{% endif %}
+{%- endmacro %}
+{% block content %}
+{% set dot = {"draft": "dot-neutral", "scheduled": "dot-violet", "publishing": "dot-blue", "published": "dot-green", "partial": "dot-amber", "failed": "dot-red"} %}
+<div id="dash-body" class="stack-lg" data-active="{{ 1 if active else 0 }}" data-pending="{{ 1 if pending else 0 }}">
+  <div class="row between wrap gap">
+    <div>
+      <h1 class="h1">Dashboard</h1>
+      <p class="muted small">Publish jobs across platforms{% if active %}<span class="text-blue"> · live updating</span>{% endif %}</p>
+    </div>
+    <div class="row gap-sm">
+      <a href="" class="btn btn-secondary">Refresh</a>
+      <a href="/compose" class="btn btn-secondary">New post</a>
+      <button type="button" class="btn btn-primary" data-run-worker>Run worker now</button>
+    </div>
+  </div>
+
+  <div class="grid-4">
+    {% for s in ["queued", "uploading", "published", "failed"] %}
+    <div class="card pad"><p class="xs upper muted">{{ s }}</p><p class="stat">{{ counts[s] }}</p></div>
+    {% endfor %}
+  </div>
+
+  <p id="notice" class="notice" hidden></p>
+
+  {% if not has_posts %}
+  <div class="card pad-xl center">
+    <p class="bold">No posts yet</p>
+    <p class="muted small">Compose your first multi-platform post.</p>
+    <a href="/compose" class="btn btn-primary mt">Compose</a>
+  </div>
+  {% else %}
+
+  <div class="card pad">
+    <div class="row between mb">
+      <h2 class="h2">Upcoming</h2><span class="xs muted">{{ upcoming|length }} scheduled</span>
+    </div>
+    {% if not upcoming %}
+    <p class="small muted">Nothing scheduled. Pick a time in Compose to schedule a post.</p>
+    {% else %}
+    <ul class="divided">
+      {% for s in upcoming %}
+      <li><a class="upcoming-row" href="/dashboard?post={{ s.post.id }}">
+        <div class="upcoming-when"><p class="small bold">{{ dt(s.post.scheduled_at) }}</p><p class="xs muted">{{ rel(s.post.scheduled_at) }}</p></div>
+        <p class="grow truncate small">{{ s.post.title or (s.media.original_filename if s.media) or "Untitled" }}</p>
+        <div class="icons">{% for t, j in s.targets %}{{ picon(t.platform, pmeta, "sm") }}{% endfor %}</div>
+      </a></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+
+  <div class="row between">
+    <div class="row gap">
+      <h2 class="h2">{{ ("Drafts" if filter == "drafts" else "Publication history") if view == "list" else "Calendar" }}</h2>
+      {% if view == "list" %}
+      <div class="seg seg-sm">
+        <a href="{{ qs(filter_='all') }}" class="{{ 'on' if filter == 'all' }}">All</a>
+        <a href="{{ qs(filter_='drafts') }}" class="{{ 'on' if filter == 'drafts' }}">Drafts ({{ draft_count }})</a>
+      </div>
+      {% endif %}
+    </div>
+    <div class="seg" role="tablist">
+      <a href="{{ qs(view_='list') }}" role="tab" class="{{ 'on' if view == 'list' }}">List</a>
+      <a href="{{ qs(view_='calendar') }}" role="tab" class="{{ 'on' if view == 'calendar' }}">Calendar</a>
+    </div>
+  </div>
+
+  {% if view == "calendar" %}
+  <div class="card pad">
+    <div class="row between mb">
+      <h2 class="h2">{{ month_label }}</h2>
+      <div class="row gap-xs">
+        <a class="btn-small" href="{{ qs(month_=prev_month) }}" aria-label="Previous month">←</a>
+        <a class="btn-small" href="{{ qs(view_='calendar') }}">Today</a>
+        <a class="btn-small" href="{{ qs(month_=next_month) }}" aria-label="Next month">→</a>
+      </div>
+    </div>
+    <div class="cal">
+      {% for d in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] %}<div class="cal-head">{{ d }}</div>{% endfor %}
+      {% for d in grid %}
+      {% set items = by_day.get(d, []) %}
+      <div class="cal-day{% if d.month != month.month %} cal-out{% endif %}">
+        <div class="cal-num{% if d == today %} cal-today{% endif %}">{{ d.day }}</div>
+        <ul>
+          {% for it in items[:3] %}
+          <li><a class="cal-item" href="/dashboard?post={{ it.s.post.id }}" title="{{ it.s.post.title or 'Untitled' }} · {{ it.s.post.status }}">
+            <span class="dot {{ dot[it.s.post.status] }}"></span><span class="muted hide-sm">{{ it.time }}</span>
+            <span class="truncate">{{ it.s.post.title or "Untitled" }}</span></a></li>
+          {% endfor %}
+          {% if items|length > 3 %}<li class="muted xs">+{{ items|length - 3 }} more</li>{% endif %}
+        </ul>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="row wrap gap xs muted mt">
+      {% for s in ["scheduled", "publishing", "published", "partial", "failed"] %}
+      <span class="row gap-xs"><span class="dot {{ dot[s] }}"></span>{{ s }}</span>
+      {% endfor %}
+    </div>
+  </div>
+  {% else %}
+  <div class="stack">
+    {% for c in cards %}
+    {% set p = c.post %}
+    <div class="card post-card{% if c.draft %} dashed{% endif %}{% if p.id == highlight %} highlight{% endif %}" id="post-{{ p.id }}"
+         data-post="{{ p.id }}" data-title="{{ p.title or 'Untitled' }}" data-draft="{{ 1 if c.draft else 0 }}" data-pending="{{ 1 if c.pending else 0 }}">
+      <div class="post-head">
+        <div class="post-thumb">
+          {% if c.s.thumbnail %}<img src="/api/media/{{ c.s.thumbnail.id }}" alt="">{% else %}<span>{{ "📝" if c.draft else "🎬" }}</span>{% endif %}
+        </div>
+        <div class="grow min0 stack-xs">
+          <div class="row wrap gap-sm">
+            <h3 class="truncate bold">{{ p.title or (c.s.media.original_filename if c.s.media) or "Untitled" }}</h3>
+            {{ badge(p.status, c.tone) }}{{ badge(p.visibility) }}
+          </div>
+          {% if p.caption %}<p class="clamp-2 small muted">{{ p.caption }}</p>{% endif %}
+          <p class="xs muted">
+            {{ "Last edited" if c.draft else "Created" }} {{ dt(p.updated_at if c.draft else p.created_at) }}
+            {% if p.scheduled_at %} · {{ "planned for" if c.draft else "scheduled for" }} {{ dt(p.scheduled_at) }}{% endif %}
+            {% if c.s.media and c.s.media.duration_sec %} · {{ fdur(c.s.media.duration_sec) }}{% endif %}
+            {% if c.draft and not c.s.media %}<span class="text-amber"> · no video yet</span>{% endif %}
+          </p>
+          <div class="stack-sm pt-xs">
+            <div class="row wrap gap-sm">
+              {% if c.draft %}
+              <a href="/compose?draft={{ p.id }}" class="btn-small">Edit</a>
+              <button type="button" class="btn-small" data-publish>Publish now</button>
+              <button type="button" class="btn-small" data-schedule-toggle>Schedule…</button>
+              {% endif %}
+              <button type="button" class="btn-small text-red" data-delete {% if c.uploading %}disabled title="Can't delete while a video is uploading"{% endif %}>Delete</button>
+            </div>
+            {% if c.draft %}
+            <div class="row wrap gap-sm" data-schedule-form hidden>
+              <input type="datetime-local" class="input input-sm w-auto" value="{{ local_input(c.schedule_default) if c.schedule_default else default_schedule }}">
+              <button type="button" class="btn-small" data-schedule-confirm>Confirm schedule</button>
+              <button type="button" class="btn-ghost" data-schedule-toggle>Cancel</button>
+            </div>
+            {% endif %}
+            <div class="err-box" data-error hidden></div>
+          </div>
+        </div>
+      </div>
+      {% if c.targets %}
+      <ul class="targets">
+        {% for tv in c.targets %}
+        {% set job = tv.job %}
+        <li class="target-row">
+          <div class="row gap grow min0">
+            {{ picon(tv.target.platform, pmeta, "sm") }}
+            <span class="target-name small bold">{{ tv.name }}</span>
+            <div class="row wrap gap-sm grow min0">
+              {{ badge(tv.label, tv.tone) }}
+              {% if tv.dry_run %}{{ badge("dry-run", "amber") }}{% endif %}
+              {% if tv.goes_live %}<span class="xs text-violet" title="{{ dt(tv.goes_live) }}">uploaded · goes live {{ rel(tv.goes_live) }}</span>{% endif %}
+              {% if job and job.status == "uploading" %}
+              <span class="row gap-sm"><span class="bar"><span style="width: {{ tv.progress }}%"></span></span><span class="xs muted">{{ tv.progress }}%</span></span>
+              {% endif %}
+              {% if tv.waiting and job.next_run_at %}<span class="xs muted" title="{{ dt(job.next_run_at) }}">{{ "runs" if job.attempts == 0 else "next attempt" }} {{ rel(job.next_run_at) }}</span>{% endif %}
+              {% if job and job.attempts > 0 %}<span class="xs faint">attempt {{ job.attempts }}/{{ job.max_attempts }}</span>{% endif %}
+            </div>
+          </div>
+          <div class="row gap-sm target-actions">
+            {% if job and job.result_url %}
+              {% if tv.is_dry_run_link %}<a href="{{ job.result_url }}" class="xs bold text-amber link">dry-run preview →</a>
+              {% else %}<a href="{{ job.result_url }}" target="_blank" rel="noreferrer" class="xs bold text-violet link">View on {{ tv.name }} ↗</a>{% endif %}
+            {% endif %}
+            {% if job and job.status == "failed" %}<button type="button" class="btn-small" data-retry="{{ job.id }}">Retry</button>{% endif %}
+          </div>
+          {% if (job and job.error and job.status != "published") or tv.warnings %}
+          <div class="target-notes">
+            {% if job and job.error and job.status != "published" %}<p class="xs {{ 'text-red' if job.status == 'failed' else 'text-amber' }}">{{ job.error }}</p>{% endif %}
+            {% for w in tv.warnings %}<p class="xs text-amber">⚠ {{ w }}</p>{% endfor %}
+          </div>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="no-targets xs muted">No platforms selected yet.</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% if filter == "drafts" and not cards %}
+    <p class="small muted">No drafts. Use <span class="bold">Save draft</span> in Compose to keep work in progress.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/dashboard.js" defer></script>{% endblock %}
