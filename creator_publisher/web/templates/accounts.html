@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge, picon %}
+{% block title %}Accounts · Creator Publisher{% endblock %}
+{% block content %}
+{% set mode_text = {
+  "on": ("alert-amber", "Dry-run mode is ON (DRY_RUN=true): every publish is simulated with a fake result link. Nothing is posted."),
+  "auto": ("alert-blue", "Auto dry-run: platforms without OAuth credentials are simulated; configured platforms publish for real. Set DRY_RUN=true or false to force a mode."),
+  "off": ("alert-green", "Live mode (DRY_RUN=false): publishes go to the real platforms. Unconfigured platforms will fail."),
+} %}
+<div class="stack-lg">
+  <div>
+    <h1 class="h1">Accounts</h1>
+    <p class="muted small">Connect the channels you publish to.</p>
+  </div>
+
+  <div id="flash">
+  {% if flash %}
+    <div class="alert {{ 'alert-green' if flash.ok else 'alert-red' }} row between">
+      <span>{{ flash.text }}</span><button type="button" class="dismiss" data-dismiss aria-label="Dismiss">×</button>
+    </div>
+  {% endif %}
+  </div>
+  <div class="alert {{ mode_text[mode][0] }}">{{ mode_text[mode][1] }}</div>
+
+  <div class="grid-3">
+    {% for p in platforms %}
+    <div class="card pad col">
+      <div class="row gap">
+        {{ picon(p.platform, pmeta) }}
+        <div class="grow">
+          <p class="bold">{{ p.displayName }}</p>
+          <div class="chips">
+            {% if p.configured %}{{ badge("Configured", "green") }}{% else %}{{ badge("Not configured") }}{% endif %}
+            {% if p.dryRun %}{{ badge("Dry-run", "amber") }}{% endif %}
+            {% if p.capabilities.nativeScheduling %}{{ badge("Native scheduling", "violet") }}{% endif %}
+          </div>
+        </div>
+      </div>
+
+      <div class="grow stack mt">
+        {% if not p.configured %}
+        <div class="xs muted stack-sm">
+          <p>Add OAuth credentials to <code class="code">.env</code> to enable real publishing:</p>
+          <pre class="pre-box">{% for e in p.envVars %}{{ e }}=…{% if not loop.last %}
+{% endif %}{% endfor %}</pre>
+          <p>Redirect URI to register: <code class="break">{{ p.redirectUri }}</code></p>
+          <p>Until then, posts to {{ p.displayName }} run as dry-run simulations.</p>
+        </div>
+        {% endif %}
+        {% if p.accounts %}
+        <ul class="stack-sm">
+          {% for a in p.accounts %}
+          {% set expired = a.expiresAt and ts_ms(a.expiresAt) < now_ms %}
+          <li class="account-row">
+            <div class="min0">
+              <p class="small bold truncate">{{ a.displayName }}</p>
+              <p class="xs muted truncate">Connected {{ dt(a.createdAt) }}
+                {% if a.expiresAt %}<span class="{{ 'text-amber' if expired }}"> · token {{ "expired (auto-refreshes)" if expired else "expires " ~ dt(a.expiresAt) }}</span>{% endif %}
+              </p>
+            </div>
+            <button type="button" class="btn-small" data-disconnect="{{ a.id }}">Disconnect</button>
+          </li>
+          {% endfor %}
+        </ul>
+        {% elif p.configured %}
+        <p class="xs muted">No account connected yet.</p>
+        {% endif %}
+      </div>
+
+      <div class="mt">
+        {% if p.configured %}
+        <a href="/api/auth/{{ p.platform }}/start?returnTo=/accounts" class="btn btn-primary w-full">
+          {{ "Connect another / reconnect" if p.accounts else "Connect " ~ p.displayName }}</a>
+        {% else %}
+        <button type="button" class="btn btn-secondary w-full" disabled title="Set the env vars above and restart the server">Connect {{ p.displayName }}</button>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  // Drop ?connected / ?error from the URL so a refresh doesn't repeat the message.
+  if (location.search) history.replaceState(null, "", "/accounts");
+  document.querySelector("[data-dismiss]")?.addEventListener("click", (e) => e.target.closest(".alert").remove());
+  for (const b of document.querySelectorAll("[data-disconnect]")) {
+    b.addEventListener("click", async () => {
+      if (!confirm("Disconnect this account? Scheduled jobs for it will fail until you reconnect.")) return;
+      b.disabled = true; b.textContent = "…";
+      const res = await fetch(`/api/accounts/${b.dataset.disconnect}`, { method: "DELETE" });
+      location.href = res.ok ? "/accounts?disconnected=1" : `/accounts?error=${encodeURIComponent(`Disconnect failed (${res.status})`)}`;
+    });
+  }
+</script>
+{% endblock %}

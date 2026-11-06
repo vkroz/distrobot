@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Log in · Creator Publisher{% endblock %}
+{% block content %}
+<div class="login">
+  <div class="center">
+    <h1 class="h1">Log in</h1>
+    <p class="muted small">Creator Publisher admin</p>
+  </div>
+
+  {% if auth_cfg.disabled_reason %}
+  <div class="alert alert-red">{{ auth_cfg.disabled_reason }}</div>
+  {% elif auth_cfg.using_default_credentials %}
+  <div class="alert alert-amber">
+    <p class="bold">Demo login in use</p>
+    <p>Username <code class="bold">{{ default_username }}</code>, password <code class="bold">{{ default_password }}</code>.
+      Set <code>APP_USERNAME</code>, <code>APP_PASSWORD</code> and <code>APP_SESSION_SECRET</code> before exposing this app.</p>
+  </div>
+  {% endif %}
+
+  <div class="card pad-lg">
+    <form method="post" action="/api/session" class="stack">
+      <input type="hidden" name="next" value="{{ next }}">
+      <label class="field">
+        <span class="label">Username</span>
+        <input name="username" required autocomplete="username" autofocus class="input">
+      </label>
+      <label class="field">
+        <span class="label">Password</span>
+        <input name="password" type="password" required autocomplete="current-password" class="input">
+      </label>
+      {% if error %}<p class="text-red small">{{ error }}</p>{% endif %}
+      <button type="submit" class="btn btn-primary w-full" {% if auth_cfg.disabled_reason %}disabled{% endif %}>Log in</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

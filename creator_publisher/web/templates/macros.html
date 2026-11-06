@@ -1,0 +1,7 @@
+{% macro badge(text, tone="neutral", extra="") -%}
+<span class="badge tone-{{ tone }} {{ extra }}">{{ text }}</span>
+{%- endmacro %}
+
+{% macro picon(platform, pmeta, size="md") -%}
+<span aria-hidden="true" class="picon picon-{{ size }} {{ pmeta[platform].cls }}">{{ pmeta[platform].short }}</span>
+{%- endmacro %}
