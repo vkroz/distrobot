@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end dry-run smoke test against a running server (python -m creator_publisher).
+# End-to-end dry-run smoke test against a running server (python -m distrobot).
 #   BASE=http://localhost:8000 APP_USERNAME=admin APP_PASSWORD=admin scripts/smoke-dry-run.sh
 # Covers: login, 401 without session, upload (+ ffprobe when a real video can be generated),
 # draft create → edit → publish to all 7 platforms, worker run, results, delete, logout.

@@ -18,7 +18,7 @@ from ..jobs.worker import get_worker, worker_disabled
 from . import api, pages
 from .middleware import AuthMiddleware
 
-log = logging.getLogger("creator_publisher")
+log = logging.getLogger("distrobot")
 
 
 @asynccontextmanager

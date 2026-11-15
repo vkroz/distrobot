@@ -1,8 +1,8 @@
 import pytest
 
-from creator_publisher.models import PLATFORM_IDS, MediaInfo, TargetContent
-from creator_publisher.platforms.rules import MB, PLATFORM_RULES, get_rules, parse_aspect_ratio
-from creator_publisher.platforms.text import (
+from distrobot.models import PLATFORM_IDS, MediaInfo, TargetContent
+from distrobot.platforms.rules import MB, PLATFORM_RULES, get_rules, parse_aspect_ratio
+from distrobot.platforms.text import (
     count_text,
     extract_hashtags,
     normalize_hashtags,
@@ -10,7 +10,7 @@ from creator_publisher.platforms.text import (
     split_trailing_hashtags,
     truncate_text,
 )
-from creator_publisher.platforms.validate import (
+from distrobot.platforms.validate import (
     apply_text_adaptations,
     classify_orientation,
     compose_content,
@@ -172,7 +172,7 @@ def test_resolve_and_requirements():
 
 
 def test_tiktok_settings_validation():
-    from creator_publisher.platforms.tiktok import MOCK_CREATOR_INFO, commercial_label, consent_text, tiktok_post_info
+    from distrobot.platforms.tiktok import MOCK_CREATOR_INFO, commercial_label, consent_text, tiktok_post_info
 
     r = validate_for_platform("tiktok", content(), settings={})
     assert "tiktok_privacy_required" in codes(r)

@@ -4,10 +4,10 @@ import os
 
 import pytest
 
-from creator_publisher.adapters import reset_adapters
-from creator_publisher.auth import login_throttle
-from creator_publisher.db import Database, set_db
-from creator_publisher.jobs.worker import set_worker
+from distrobot.adapters import reset_adapters
+from distrobot.auth import login_throttle
+from distrobot.db import Database, set_db
+from distrobot.jobs.worker import set_worker
 
 CREDENTIAL_VARS = [
     "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET",

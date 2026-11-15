@@ -22,7 +22,7 @@ from ..storage import delete_stored_file
 from .lease import acquire_lease, is_dead_local_owner, read_lease, release_lease, renew_lease
 from .runner import RunnerOptions, execute_job, should_dry_run
 
-log = logging.getLogger("creator_publisher.worker")
+log = logging.getLogger("distrobot.worker")
 
 HOUR_MS = 60 * 60_000
 

@@ -2,11 +2,11 @@ from datetime import timedelta
 
 import pytest
 
-from creator_publisher.db import Database
-from creator_publisher.db import repo
-from creator_publisher.jobs.lease import acquire_lease, is_dead_local_owner, read_lease, release_lease, renew_lease
-from creator_publisher.jobs.state import can_transition, derive_post_status, retry_delay_ms
-from creator_publisher.models import iso, now_utc
+from distrobot.db import Database
+from distrobot.db import repo
+from distrobot.jobs.lease import acquire_lease, is_dead_local_owner, read_lease, release_lease, renew_lease
+from distrobot.jobs.state import can_transition, derive_post_status, retry_delay_ms
+from distrobot.models import iso, now_utc
 
 
 def make_post(db, platforms=("youtube",), **kw):

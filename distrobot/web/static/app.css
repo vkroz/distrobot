@@ -1,4 +1,4 @@
-/* Creator Publisher — hand-written stylesheet (no build step). Light + dark via prefers-color-scheme. */
+/* Distrobot — hand-written stylesheet (no build step). Light + dark via prefers-color-scheme. */
 :root {
   color-scheme: light dark;
   --bg: #fafafa;

@@ -7,21 +7,21 @@ from pathlib import Path
 import httpx
 import pytest
 
-from creator_publisher.adapters import (
+from distrobot.adapters import (
     AdapterError,
     PublishContext,
     PublishRequest,
     get_adapter,
     list_adapters,
 )
-from creator_publisher.adapters.platforms.facebook import FacebookAdapter
-from creator_publisher.adapters.platforms.instagram import InstagramAdapter
-from creator_publisher.adapters.platforms.linkedin import LinkedInAdapter
-from creator_publisher.adapters.platforms.tiktok import TikTokAdapter, tiktok_chunks
-from creator_publisher.adapters.platforms.vimeo import VimeoAdapter
-from creator_publisher.adapters.platforms.x import XAdapter
-from creator_publisher.adapters.platforms.youtube import YouTubeAdapter, fit_tags, next_offset_from_range
-from creator_publisher.models import PLATFORM_IDS, ConnectedAccount, Media, TargetContent
+from distrobot.adapters.platforms.facebook import FacebookAdapter
+from distrobot.adapters.platforms.instagram import InstagramAdapter
+from distrobot.adapters.platforms.linkedin import LinkedInAdapter
+from distrobot.adapters.platforms.tiktok import TikTokAdapter, tiktok_chunks
+from distrobot.adapters.platforms.vimeo import VimeoAdapter
+from distrobot.adapters.platforms.x import XAdapter
+from distrobot.adapters.platforms.youtube import YouTubeAdapter, fit_tags, next_offset_from_range
+from distrobot.models import PLATFORM_IDS, ConnectedAccount, Media, TargetContent
 
 pytestmark = pytest.mark.anyio
 
@@ -200,7 +200,7 @@ async def test_youtube_resumable_upload_with_resume(video):
     req.checkpoint = cps[-1]  # retry resumes from the saved session
     thumb = video.parent / "t.jpg"
     thumb.write_bytes(b"jpg")
-    from creator_publisher.adapters.types import Thumbnail
+    from distrobot.adapters.types import Thumbnail
 
     req.thumbnail = Thumbnail(str(thumb), "image/jpeg", 3)
     res = await a.publish(req, ctx(handler, "youtube", cps))

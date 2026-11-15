@@ -7,7 +7,7 @@ import time
 import pytest
 from starlette.testclient import TestClient
 
-from creator_publisher.auth import (
+from distrobot.auth import (
     check_credentials,
     get_auth_config,
     is_cross_origin_write,
@@ -16,9 +16,9 @@ from creator_publisher.auth import (
     sign_session,
     verify_session,
 )
-from creator_publisher.media.probe import ffprobe_args, merge_metadata, parse_ffprobe_output, probe_video
-from creator_publisher.web.app import create_app
-from creator_publisher.web.common import parse_range
+from distrobot.media.probe import ffprobe_args, merge_metadata, parse_ffprobe_output, probe_video
+from distrobot.web.app import create_app
+from distrobot.web.common import parse_range
 
 
 @pytest.fixture

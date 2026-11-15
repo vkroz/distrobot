@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "macros.html" import badge, picon %}
-{% block title %}Dashboard · Creator Publisher{% endblock %}
+{% block title %}Dashboard · Distrobot{% endblock %}
 {% macro qs(view_=None, filter_=None, month_=None) -%}
 ?view={{ view_ or view }}&filter={{ filter_ or filter }}{% if (month_ or "") %}&month={{ month_ }}{% endif %}
 {%- endmacro %}

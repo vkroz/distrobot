@@ -2,13 +2,13 @@ from datetime import timedelta
 
 import pytest
 
-from creator_publisher.adapters import AdapterError, YouTubeAdapter, register_adapter
-from creator_publisher.adapters.types import DoPublishResult, RefreshedTokens
-from creator_publisher.db import repo
-from creator_publisher.jobs.runner import RunnerOptions, dry_run_mode_from_env, execute_job
-from creator_publisher.jobs.worker import PublishWorker
-from creator_publisher.models import iso, now_utc
-from creator_publisher.services.posts import (
+from distrobot.adapters import AdapterError, YouTubeAdapter, register_adapter
+from distrobot.adapters.types import DoPublishResult, RefreshedTokens
+from distrobot.db import repo
+from distrobot.jobs.runner import RunnerOptions, dry_run_mode_from_env, execute_job
+from distrobot.jobs.worker import PublishWorker
+from distrobot.models import iso, now_utc
+from distrobot.services.posts import (
     ComposeError,
     compose_post,
     delete_post_and_orphans,

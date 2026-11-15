@@ -1,4 +1,4 @@
-# Creator Publisher
+# Distrobot
 
 Upload one video, tailor it per platform, and publish (or schedule) it to **YouTube, TikTok, Instagram Reels, X, Facebook Pages, LinkedIn and Vimeo** from one place.
 
@@ -9,12 +9,11 @@ Python rebuild of the original Next.js/TypeScript app: same features, same HTTP 
 ## Quick start
 
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e '.[dev]'
-python -m creator_publisher            # http://127.0.0.1:8000  (--host, --port, --reload)
+uv sync --extra dev
+uv run python -m distrobot     # http://127.0.0.1:8000  (--host, --port, --reload)
 ```
 
-Requires **Python ≥ 3.11**. For server-side video measurement install **ffmpeg** (`ffprobe` on `PATH`); without it, browser-reported values are used.
+Requires **Python ≥ 3.11** and **[uv](https://docs.astral.sh/uv/)**. For server-side video measurement install **ffmpeg** (`ffprobe` on `PATH`); without it, browser-reported values are used.
 
 No configuration is needed to try it: every platform runs in dry-run mode.
 
@@ -23,8 +22,8 @@ No configuration is needed to try it: every platform runs in dry-run mode.
 To publish for real, copy `.env.example` to `.env` (loaded at startup), fill in a platform's OAuth credentials, restart, and connect the account on **Accounts**.
 
 ```bash
-pytest                       # unit + integration tests
-scripts/smoke-dry-run.sh     # end-to-end dry-run flow against a running server
+uv run --extra dev pytest    # unit + integration tests
+scripts/smoke-dry-run.sh      # end-to-end dry-run flow against a running server
                              # (BASE=http://localhost:8000 APP_USERNAME=admin APP_PASSWORD=admin)
 ```
 
@@ -51,7 +50,7 @@ Times are rendered in the viewer's time zone (the browser sends it in a `tz` coo
 Browser (server-rendered Jinja2 pages + small vanilla JS: compose.js, dashboard.js)
   │  POST /api/media (raw body, streamed)   POST /api/validate   POST /api/posts   GET /api/accounts
   ▼
-Starlette app (creator_publisher/web/) ── AuthMiddleware (login gate + CSRF, pure ASGI so uploads stream)
+Starlette app (distrobot/web/) ── AuthMiddleware (login gate + CSRF, pure ASGI so uploads stream)
   │                                     └─ services/posts.py (compose, drafts, read models)
   ├─ platforms/   rules per platform + validation engine (also serves live validation in compose)
   ├─ db/          SQLite (stdlib sqlite3): migrations, repository, savepoint transactions
@@ -105,7 +104,7 @@ TikTok's [content sharing guidelines](https://developers.tiktok.com/doc/content-
 - **Disclose video content**: "Your brand" leads to a *Promotional content* label, "Branded content" to *Paid partnership*. Branded content can't be "Only me".
 - **The required declaration** next to the publish button: "By posting, you agree to TikTok's [Music Usage Confirmation]" (plus the [Branded Content Policy] for branded content).
 
-These choices are stored in the TikTok target's `settings` and checked by the shared validation engine (`creator_publisher/platforms/tiktok.py`) in the browser, at compose/publish time on the server, and again in the adapter against fresh `creator_info` before uploading. The adapter sends them as `privacy_level`, `disable_comment/duet/stitch` and `brand_organic_toggle`/`brand_content_toggle`. It never picks a privacy level for the user.
+These choices are stored in the TikTok target's `settings` and checked by the shared validation engine (`distrobot/platforms/tiktok.py`) in the browser, at compose/publish time on the server, and again in the adapter against fresh `creator_info` before uploading. The adapter sends them as `privacy_level`, `disable_comment/duet/stitch` and `brand_organic_toggle`/`brand_content_toggle`. It never picks a privacy level for the user.
 
 ### Media probing
 
@@ -134,7 +133,7 @@ The worker runs **inside the server process**. Run **one app instance** per data
 | TikTok posting UX (creator info, privacy without default, interaction toggles, commercial disclosure, consent text) | **Real UI + validation**. Creator info is **mocked** unless a TikTok account is connected and TikTok isn't in dry-run. Not reviewed by TikTok's audit. |
 | Server-side video metadata (ffprobe) | **Real**, with browser values as the fallback |
 | Restart recovery + single-process worker lease | **Real** (SQLite lease; not a distributed lock) |
-| Platform rules / limits | Checked against official docs in 2026-11, with source URLs in `creator_publisher/platforms/rules.py`. Where a platform documents **no** limit (Facebook video title/description, LinkedIn video title, Vimeo description), the app uses a soft warning or doesn't enforce one rather than inventing a hard cap; see [Limits we couldn't verify](#limits-we-couldnt-verify). |
+| Platform rules / limits | Checked against official docs in 2026-11, with source URLs in `distrobot/platforms/rules.py`. Where a platform documents **no** limit (Facebook video title/description, LinkedIn video title, Vimeo description), the app uses a soft warning or doesn't enforce one rather than inventing a hard cap; see [Limits we couldn't verify](#limits-we-couldnt-verify). |
 | Uploads to local disk, SQLite persistence | **Real** |
 | Job queue, worker, scheduling, retries/backoff, resume checkpoints, token refresh | **Real** (single process) |
 | Dry-run publishing | **Simulated**: validation runs, upload progress is faked, the result links to `/dry-run/<jobId>` |
@@ -162,7 +161,7 @@ Approval programs change often, so check each provider's current docs before rel
 
 ### Limits we couldn't verify
 
-Checked against official docs in 2026-11 (source URLs are in comments in `creator_publisher/platforms/rules.py`):
+Checked against official docs in 2026-11 (source URLs are in comments in `distrobot/platforms/rules.py`):
 
 | Limit | Status | What the app does |
 | --- | --- | --- |
@@ -194,7 +193,7 @@ All env vars are documented in [`.env.example`](.env.example) (a test fails if c
 
 ## Testing
 
-`pytest` runs everything with in-memory SQLite and mocked HTTP. No network access or credentials are needed.
+`uv run --extra dev pytest` runs everything with in-memory SQLite and mocked HTTP. No network access or credentials are needed.
 
 | File | Covers |
 | --- | --- |
